@@ -16,6 +16,22 @@ def users() -> list[dict]:
     return st.session_state["users"]
 
 
+def ensure_default_owner() -> None:
+    """With no sign-in screen there must be someone to show: create the fallback owner."""
+    if not users():
+        set_users([dict(u) for u in store.DEFAULT_USERS])
+
+
+def sign_in(username: str) -> str:
+    """Return the slug for this username, creating the owner if it does not exist yet."""
+    existing = store.find_user(users(), username)
+    if existing:
+        return existing["slug"]
+    new_users = store.add_user(users(), username.strip())
+    set_users(new_users)
+    return new_users[-1]["slug"]
+
+
 def set_users(new_users: list[dict]) -> None:
     st.session_state["users"] = new_users
     store.save_users(new_users)
@@ -23,6 +39,9 @@ def set_users(new_users: list[dict]) -> None:
 
 def current_user() -> str:
     slugs = [u["slug"] for u in users()]
+    if not slugs:
+        ensure_default_owner()
+        slugs = [u["slug"] for u in users()]
     if st.session_state.get("user") not in slugs:
         st.session_state["user"] = slugs[0]
     return st.session_state["user"]

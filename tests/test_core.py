@@ -183,8 +183,7 @@ def test_benchmarks_upload_accepts_row_labels_header_and_drops_total():
 # ----------------------------------------------------------------- store ----
 def test_store_roundtrip(tmp_path, monkeypatch):
     from core import store
-    monkeypatch.setattr(store, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(store, "USERS_FILE", tmp_path / "users.json")
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
     frame = pd.DataFrame({"month": pd.to_datetime(["2026-04-01"]), "stock": ["TCS"], "gross_profit": [100.5]})
     store.save_frame("user1", "trades", frame)
     back = store.load_frame("user1", "trades")
@@ -192,7 +191,7 @@ def test_store_roundtrip(tmp_path, monkeypatch):
     store.save_frame("user1", "trades", None)
     assert store.load_frame("user1", "trades") is None
     users = store.add_user(store.load_users(), "Priya")
-    assert users[-1]["slug"] == "priya" and len(users) == 3
+    assert users[-1]["slug"] == "priya" and len(users) == 1
     store.save_users(users)
     assert store.load_users()[-1]["name"] == "Priya"
 
@@ -206,3 +205,40 @@ def test_trade_from_form_matches_sheet_formulas():
     assert row["pl"] == pytest.approx(175 * (58.88 - 52.13))
     assert row["gross_profit"] == pytest.approx(row["pl"] - 48.5)
     assert row["roi"] == pytest.approx(row["pl"] / 48000 * 100)
+
+
+# ---------------------------------------------------- multi-sheet import ----
+def _workbook(tmp_path):
+    import pandas as pd
+    path = tmp_path / "years.xlsx"
+    y1 = pd.DataFrame({"Buy Date": ["2025-03-03"], "Month": ["2025-03-01"], "STOCK": ["TCS"], "Gross Profit": [100]})
+    y2 = pd.DataFrame({"Buy Date": ["2026-04-06"], "Month": ["2026-04-01"], "STOCK": ["INFY"], "Gross Profit": [200]})
+    cap = pd.DataFrame({"Row Labels": ["Mar-25", "Apr-26", "Grand Total"], "Average of Capital": ["10,00,000", "20,00,000", "15,00,000"]})
+    with pd.ExcelWriter(path) as w:
+        y1.to_excel(w, sheet_name="2025", index=False)
+        y2.to_excel(w, sheet_name="2026", index=False)
+        cap.to_excel(w, sheet_name="Capital", index=False)
+    return path
+
+
+def test_multi_sheet_import_detects_tabs_and_combines(tmp_path):
+    from core.parse import list_sheets, looks_like_trade_sheet, load_trades_multi, dedupe_trades
+    path = _workbook(tmp_path)
+    with open(path, "rb") as f:
+        sheets = list_sheets(f)
+        assert [s for s in sheets if looks_like_trade_sheet(f, "years.xlsx", s)] == ["2025", "2026"]
+        result = load_trades_multi(f, "years.xlsx", ["2025", "2026"])
+    assert result.ok and len(result.trades) == 2
+    assert sorted(result.trades["source_sheet"]) == ["2025", "2026"]
+    merged, dropped = dedupe_trades(pd.concat([result.trades, result.trades]))
+    assert len(merged) == 2 and dropped == 2
+
+
+def test_capital_sheet_from_pivot(tmp_path):
+    from core.parse import load_capital_sheet
+    path = _workbook(tmp_path)
+    with open(path, "rb") as f:
+        cap, errors = load_capital_sheet(f, "years.xlsx", "Capital")
+    assert not errors
+    assert cap["month"].dt.strftime("%b-%y").tolist() == ["Mar-25", "Apr-26"]
+    assert cap["Capital"].tolist() == [1000000, 2000000]

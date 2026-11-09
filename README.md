@@ -33,21 +33,33 @@ Rows whose period is not a calendar month (e.g. `YEAR 2026`) are shown under
 `#NUM!` / `#DIV/0!` cells, text months like `Jul-23` and Indian-formatted numbers
 like `1,08,959` are all handled.
 
-## Sign-in
+## Sign-in and owners
 
 Set `APP_PASSWORD` in the environment (the Lightsail setup script passes it into
-the service) and the app shows one sign-in screen: a **Username** dropdown
-listing the portfolio owners and a single shared **Password**. Signing in as a
-user makes them the active owner, so each person lands on their own data; the
-sidebar shows who is signed in and offers Sign out. The owner selector stays
-available after sign-in, so either user can look at the other's dashboards. If
-you ever need strict separation, ask for per-user passwords; it is a small change.
+the service) and the app shows one sign-in screen: a typed **Username** and the
+single shared **Password**. A new username creates a new portfolio owner; an
+existing one opens theirs. The sidebar shows who is signed in, lets you switch
+owner, and has *Rename or add owner*. There are no per-user passwords: anyone
+with the shared password can view every owner's data. If you need strict
+separation, ask for per-user passwords; it is a small change.
 
 Without `APP_PASSWORD` (for example when running locally) there is no sign-in
-screen and the sidebar selector alone chooses the owner.
+screen and a single owner called "Owner" is used.
 
-The `data/` folder holds every owner's data and is git-ignored; back it up with
-the VM snapshot or copy it off periodically.
+Owner folders live under `data/<owner>/`. To remove an owner entirely, delete
+that folder (and the entry in `data/users.json`) on the server.
+
+## Importing a workbook with one tab per year
+
+Upload the whole workbook on Trading Book. Tabs that look like trade logs are
+pre-selected; untick pivot or summary tabs. Choose **Replace** (first load) or
+**Add to existing** (later years or corrections); exact duplicate trades are
+skipped, so re-importing a tab is safe. Each row remembers its tab in
+`source_sheet`. Investment Book works the same way for holdings.
+
+Monthly capital can be uploaded under *2. Monthly capital*: any sheet with a
+Month (or "Row Labels") column and a Capital (or "Average of Capital") column;
+Grand Total rows are ignored. A `Capital` column in the trade rows is also used.
 
 ## Run locally
 
@@ -101,6 +113,9 @@ Everything is done in the AWS Console; no command-line tools on your laptop.
    - *GitHub (recommended):* create a free account, a public repository named
      `lakshya`, and upload this folder's contents through the browser
      ("uploading an existing file", drag the folders in). No git commands needed.
+     Folders starting with a dot (`.streamlit`) are hidden on Windows and are
+     often skipped by drag-and-drop; the setup script restores the theme config
+     from `deploy/streamlit-config.toml` if it is missing.
      For a private repo run `gh auth login` on the server before step 6.
    - *No GitHub:* download the Lightsail default SSH key (Account → SSH keys)
      and copy the zip from your laptop:
@@ -163,6 +178,7 @@ core/state.py               Streamlit-side cache and write-through
 core/formatting.py          Indian number formatting (37,00,000)
 tests/test_core.py          unit tests (pytest -q)
 deploy/setup-lightsail.sh   one-shot VM setup (Lightsail or any Ubuntu VM)
+deploy/streamlit-config.toml copy of the theme config, restored by the setup script
 Dockerfile                  for Cloud Run or any container host
 .streamlit/config.toml      theme and upload limit
 ```

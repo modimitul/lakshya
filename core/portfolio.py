@@ -163,3 +163,42 @@ def portfolio_template_bytes() -> bytes:
         for idx, col in enumerate(headers, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(12, len(col) + 2)
     return buffer.getvalue()
+
+
+def looks_like_portfolio_sheet(file, filename: str, sheet_name) -> bool:
+    from .parse import sheet_headers
+    try:
+        mapped = set(map_columns(sheet_headers(file, filename, sheet_name), PORTFOLIO_ALIASES).values())
+    except Exception:
+        return False
+    return "stock" in mapped and bool(mapped & {"cost", "buy", "qty"})
+
+
+def dedupe_entries(entries: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    keys = [c for c in ("month", "sector", "stock", "qty", "buy", "cost") if c in entries]
+    before = len(entries)
+    out = entries.drop_duplicates(subset=keys, keep="first").reset_index(drop=True)
+    return out, before - len(out)
+
+
+def load_portfolio_multi(file, filename: str, sheets: list) -> PortfolioResult:
+    frames, mapping = [], {}
+    result = PortfolioResult(entries=pd.DataFrame())
+    for sheet in sheets:
+        part = load_portfolio(file, filename, sheet)
+        label = f"Sheet '{sheet}'"
+        if part.errors:
+            result.warnings.append(f"{label}: " + " ".join(part.errors))
+            continue
+        part.entries["source_sheet"] = str(sheet)
+        frames.append(part.entries)
+        mapping.update(part.mapping)
+        result.notes.append(f"{label}: {len(part.entries):,} holdings")
+        for w in part.warnings:
+            result.warnings.append(f"{label}: {w}")
+    if not frames:
+        result.errors.append("None of the selected sheets could be read as a portfolio.")
+        return result
+    result.entries = pd.concat(frames, ignore_index=True)
+    result.mapping = mapping
+    return result

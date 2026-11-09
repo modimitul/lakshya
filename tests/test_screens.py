@@ -68,3 +68,29 @@ def test_portfolio_manual_form_adds_an_entry():
     at.switch_page("screens/reports.py").run()
     assert not at.exception
     assert any(m.label == "Total invested" for m in at.metric)
+
+
+def test_sign_in_with_new_username_creates_owner(monkeypatch):
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.run()
+    assert not at.exception
+    assert not at.sidebar.selectbox, "gate should hide the app"
+    by_label(at.text_input, "Username").set_value("Priya")
+    by_label(at.text_input, "Password").set_value("wrong")
+    by_label(at.button, "Sign in").click().run()
+    assert any("not correct" in e.value for e in at.error)
+    by_label(at.text_input, "Username").set_value("Priya")
+    by_label(at.text_input, "Password").set_value("secret")
+    by_label(at.button, "Sign in").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["signed_in_as"] == "priya"
+    assert at.session_state["user"] == "priya"
+    # second person signs in in a fresh session: both owners exist, no placeholders
+    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at2.run()
+    by_label(at2.text_input, "Username").set_value("Rahul")
+    by_label(at2.text_input, "Password").set_value("secret")
+    by_label(at2.button, "Sign in").click().run()
+    names = sorted(u["name"] for u in at2.session_state["users"])
+    assert names == ["Priya", "Rahul"]

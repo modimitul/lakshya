@@ -323,3 +323,104 @@ def template_bytes() -> bytes:
         for idx, col in enumerate(headers, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(12, len(col) + 2)
     return buffer.getvalue()
+
+
+# ------------------------------------------------------- multi-sheet import --
+TRADE_KEY_COLUMNS = ["buy_date", "month", "stock", "type", "strike", "qty", "buy", "sell", "gross_profit"]
+
+
+def sheet_headers(file: IO[bytes], filename: str, sheet_name) -> list[str]:
+    """Header row of one sheet without reading the data."""
+    try:
+        file.seek(0)
+    except AttributeError:
+        pass
+    if filename.lower().endswith(".csv"):
+        return list(pd.read_csv(file, nrows=0).columns)
+    return list(pd.read_excel(file, sheet_name=sheet_name, nrows=0).columns)
+
+
+def looks_like_trade_sheet(file: IO[bytes], filename: str, sheet_name) -> bool:
+    """True when the sheet's headers map to a stock column and some profit/price column."""
+    try:
+        mapped = set(map_columns(sheet_headers(file, filename, sheet_name)).values())
+    except Exception:
+        return False
+    return "stock" in mapped and bool(mapped & {"gross_profit", "pl", "sell", "sale_value"})
+
+
+def dedupe_trades(trades: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Drop exact duplicate trades (same date, stock, type, strike, qty, prices, profit)."""
+    keys = [c for c in TRADE_KEY_COLUMNS if c in trades]
+    before = len(trades)
+    out = trades.drop_duplicates(subset=keys, keep="first").reset_index(drop=True)
+    return out, before - len(out)
+
+
+def load_trades_multi(file: IO[bytes], filename: str, sheets: list) -> ParseResult:
+    """Import several sheets of one workbook (e.g. one tab per year) into one ParseResult.
+
+    Each sheet is cleaned independently; a `source_sheet` column records where
+    each row came from. Sheets that fail are reported as warnings unless all fail.
+    """
+    frames, excluded, mapping = [], [], {}
+    result = ParseResult(trades=pd.DataFrame())
+    for sheet in sheets:
+        part = load_trades(file, filename, sheet)
+        label = f"Sheet '{sheet}'"
+        if part.errors:
+            result.warnings.append(f"{label}: " + " ".join(part.errors))
+            continue
+        part.trades["source_sheet"] = str(sheet)
+        frames.append(part.trades)
+        if not part.excluded.empty:
+            part.excluded["source_sheet"] = str(sheet)
+            excluded.append(part.excluded)
+        mapping.update(part.mapping)
+        result.notes.append(f"{label}: {len(part.trades):,} trades" + (f", {len(part.excluded)} excluded" if len(part.excluded) else ""))
+        for w in part.warnings:
+            result.warnings.append(f"{label}: {w}")
+    if not frames:
+        result.errors.append("None of the selected sheets could be read as a trade log.")
+        return result
+    result.trades = pd.concat(frames, ignore_index=True)
+    result.excluded = pd.concat(excluded, ignore_index=True) if excluded else pd.DataFrame()
+    result.mapping = mapping
+    return result
+
+
+# ------------------------------------------------------------ capital sheet --
+CAPITAL_ALIASES: dict[str, list[str]] = {
+    "month": ["month", "row labels", "period", "date"],
+    "capital": ["capital", "average of capital", "avg capital", "average capital", "capital deployed", "sum of capital"],
+}
+
+
+def load_capital_sheet(file: IO[bytes], filename: str, sheet_name=0) -> tuple[pd.DataFrame | None, list[str]]:
+    """Read a Month / Capital table (the 'Average of Capital' pivot works as-is).
+
+    Returns a frame with columns month (month start) and Capital, Grand Total rows dropped.
+    """
+    try:
+        raw = read_any(file, filename, sheet_name)
+    except Exception as exc:
+        return None, [f"Could not read the file: {exc}"]
+    mapping = map_columns(raw.columns, CAPITAL_ALIASES)
+    if not {"month", "capital"} <= set(mapping.values()):
+        # Pivot exports often have no header row: try the first two columns.
+        if raw.shape[1] >= 2:
+            raw = raw.iloc[:, :2]
+            raw.columns = ["month", "capital"]
+            mapping = {"month": "month", "capital": "capital"}
+        else:
+            return None, ["Need a Month (or Row Labels) column and a Capital (or Average of Capital) column."]
+    df = raw[list(mapping)].rename(columns=mapping)
+    df = df[~df["month"].astype(str).str.contains("total", case=False, na=False)]
+    df["Capital"] = coerce_numeric(df["capital"])
+    df["month"] = _to_month_start(df["month"])
+    df = df.dropna(subset=["month", "Capital"])[["month", "Capital"]]
+    if df.empty:
+        return None, ["No rows with both a month and a capital figure were found."]
+    df = df.groupby("month", as_index=False)["Capital"].mean().sort_values("month").reset_index(drop=True)
+    df["Capital"] = df["Capital"].astype("Float64")
+    return df, []

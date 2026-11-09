@@ -12,7 +12,7 @@ st.caption(APP_TAGLINE)
 users = state.users()
 current = state.current_user()
 
-cols = st.columns(len(users)) if len(users) <= 4 else st.columns(4)
+cols = st.columns(min(max(len(users), 1), 4))
 for i, u in enumerate(users):
     trades = state.get_frame("trades", u["slug"])
     portfolio = state.get_frame("portfolio", u["slug"])
@@ -46,7 +46,8 @@ with r:
     st.page_link("screens/reports.py", label="Open", icon="📊")
 
 with st.expander("Manage portfolio owners"):
-    st.caption("Rename owners here. Data is kept per owner; switch owners with the selector in the sidebar.")
+    st.caption("Owners are created when someone signs in with a new username. Rename them here or from the sidebar; "
+               "data is kept per owner.")
     renamed = []
     for u in users:
         new = st.text_input(f"Name for {u['slug']}", value=u["name"], key=f"rename_{u['slug']}")

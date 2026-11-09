@@ -65,6 +65,12 @@ else
   git clone "$REPO_URL" "$APP_DIR"
 fi
 
+# Dot-folders are often skipped by drag-and-drop uploads; restore the theme/config if missing.
+if [ ! -f "$APP_DIR/.streamlit/config.toml" ] && [ -f "$APP_DIR/deploy/streamlit-config.toml" ]; then
+  mkdir -p "$APP_DIR/.streamlit"
+  cp "$APP_DIR/deploy/streamlit-config.toml" "$APP_DIR/.streamlit/config.toml"
+fi
+
 log "Installing Python dependencies"
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip

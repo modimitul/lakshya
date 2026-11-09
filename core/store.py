@@ -1,4 +1,4 @@
-"""Per-user persistence under DATA_DIR (default: ./data, git-ignored).
+"""Per-user persistence under the data folder (default: ./data, git-ignored).
 
 Layout:
     data/users.json
@@ -17,12 +17,15 @@ from pathlib import Path
 
 import pandas as pd
 
-DATA_DIR = Path(os.environ.get("LAKSHYA_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
-USERS_FILE = DATA_DIR / "users.json"
-DEFAULT_USERS = [
-    {"slug": "user1", "name": "User 1"},
-    {"slug": "user2", "name": "User 2"},
-]
+def data_dir() -> Path:
+    """Root data folder; read on every call so LAKSHYA_DATA_DIR can change (tests, redeploys)."""
+    return Path(os.environ.get("LAKSHYA_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+
+
+def users_file() -> Path:
+    return data_dir() / "users.json"
+# Used only when there is no sign-in screen (no APP_PASSWORD) and no owners yet.
+DEFAULT_USERS = [{"slug": "owner", "name": "Owner"}]
 
 # Which stored frames carry which date columns.
 DATE_COLUMNS = {
@@ -41,19 +44,35 @@ def slugify(name: str) -> str:
 
 # ------------------------------------------------------------------ users --
 def load_users() -> list[dict]:
-    if USERS_FILE.exists():
+    """Owners from users.json; otherwise any owner folders that already hold data; otherwise none."""
+    if users_file().exists():
         try:
-            users = json.loads(USERS_FILE.read_text())
-            if isinstance(users, list) and users:
+            users = json.loads(users_file().read_text())
+            if isinstance(users, list):
                 return users
         except (OSError, json.JSONDecodeError):
             pass
-    return [dict(u) for u in DEFAULT_USERS]
+    found = []
+    if data_dir().exists():
+        for folder in sorted(data_dir().iterdir()):
+            if folder.is_dir() and any(folder.iterdir()):
+                found.append({"slug": folder.name, "name": folder.name.replace("-", " ").title()})
+    return found
+
+
+def find_user(users: list[dict], name: str) -> dict | None:
+    """Case-insensitive match on display name or slug."""
+    key = name.strip().lower()
+    return next((u for u in users if u["name"].lower() == key or u["slug"] == slugify(name)), None)
+
+
+def rename_user(users: list[dict], slug: str, new_name: str) -> list[dict]:
+    return [{**u, "name": new_name.strip()} if u["slug"] == slug else u for u in users]
 
 
 def save_users(users: list[dict]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    USERS_FILE.write_text(json.dumps(users, indent=2))
+    data_dir().mkdir(parents=True, exist_ok=True)
+    users_file().write_text(json.dumps(users, indent=2))
 
 
 def add_user(users: list[dict], name: str) -> list[dict]:
@@ -67,7 +86,7 @@ def add_user(users: list[dict], name: str) -> list[dict]:
 
 # ----------------------------------------------------------------- frames --
 def user_dir(slug: str) -> Path:
-    path = DATA_DIR / slugify(slug)
+    path = data_dir() / slugify(slug)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -91,7 +110,7 @@ def load_frame(slug: str, name: str) -> pd.DataFrame | None:
     for col in DATE_COLUMNS.get(name, []):
         if col in frame:
             frame[col] = pd.to_datetime(frame[col], errors="coerce")
-    for col in ("stock", "type", "sector", "Month", "period_label"):
+    for col in ("stock", "type", "sector", "Month", "period_label", "source_sheet"):
         if col in frame:
             frame[col] = frame[col].astype("string")
     return frame

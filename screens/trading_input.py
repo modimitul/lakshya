@@ -21,8 +21,11 @@ from core.parse import (
     COMMON_TRADE_TYPES,
     EXCEL_EXTENSIONS,
     ParseResult,
+    dedupe_trades,
     list_sheets,
-    load_trades,
+    load_capital_sheet,
+    load_trades_multi,
+    looks_like_trade_sheet,
     template_bytes,
     trade_from_form,
 )
@@ -62,37 +65,55 @@ if mode == "Upload a file":
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
     with c1:
         upload = st.file_uploader(
-            "Trade log (.xlsx, .xlsm, .xls, .csv). Uploading replaces this owner's current trades.",
+            "Trade log (.xlsx, .xlsm, .xls, .csv). A workbook with one tab per year is fine: pick the tabs below.",
             type=["xlsx", "xlsm", "xls", "csv"],
-            help="Headers are matched by name, so extra columns are fine. Needed: Month or Buy Date, "
+            help="Headers are matched by name, so extra columns are fine. Needed per tab: Month or Buy Date, "
                  "and Gross Profit (or Profit/Loss, or Qty + Buy + Sell).",
         )
     if upload is not None:
-        sheet = 0
+        sheets = [0]
         if upload.name.lower().endswith(EXCEL_EXTENSIONS):
             try:
                 sheets = list_sheets(upload)
             except Exception as exc:
                 sheets = []
                 st.error(f"Could not open the workbook: {exc}")
-            if len(sheets) > 1:
-                sheet = st.selectbox("Sheet", sheets, index=0)
-        result = load_trades(upload, upload.name, sheet)
-        show_messages(result)
-        if result.ok:
-            fingerprint = f"{upload.name}:{upload.size}:{sheet}"
-            if st.session_state.get("last_upload") != fingerprint:
-                save_trades(result.trades, result.excluded, upload.name)
-                st.session_state["last_upload"] = fingerprint
-                trades = result.trades
-            st.success(f"Loaded {len(result.trades):,} trades across {len(months_in(result.trades))} months from {upload.name}.")
-            with st.expander("Preview and column mapping"):
-                st.dataframe(result.trades.head(20), width="stretch", hide_index=True)
-                st.dataframe(pd.DataFrame({"Your header": list(result.mapping), "Used as": list(result.mapping.values())}),
-                             width="stretch", hide_index=True)
-            if not result.excluded.empty:
-                with st.expander(f"Excluded rows ({len(result.excluded)})"):
-                    st.dataframe(result.excluded, width="stretch", hide_index=True)
+        chosen = sheets
+        if len(sheets) > 1:
+            detected = [sh for sh in sheets if looks_like_trade_sheet(upload, upload.name, sh)]
+            chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets,
+                                    help="Tabs that look like trade logs are pre-selected. Untick summary or pivot tabs.")
+        how = st.radio("How to import", ["Replace this owner's trades", "Add to existing trades (duplicates skipped)"],
+                       horizontal=True, index=0 if trades is None or trades.empty else 1)
+        if st.button("Import", type="primary", disabled=not chosen):
+            result = load_trades_multi(upload, upload.name, chosen)
+            show_messages(result)
+            if result.ok:
+                incoming = result.trades
+                dropped = 0
+                if how.startswith("Add") and trades is not None and not trades.empty:
+                    merged, dropped = dedupe_trades(pd.concat([trades, incoming], ignore_index=True))
+                    added = len(merged) - len(trades)
+                    old_excluded = state.get_frame("excluded")
+                    excluded = pd.concat([x for x in (old_excluded, result.excluded) if x is not None and not x.empty], ignore_index=True) if (old_excluded is not None and not old_excluded.empty) or not result.excluded.empty else result.excluded
+                    save_trades(merged, excluded, f"{state.get_meta().get('trades_source', '')} + {upload.name}".strip(" +"))
+                    trades = merged
+                    st.success(f"Added {added:,} new trades from {upload.name} ({dropped:,} duplicates skipped). "
+                               f"{len(trades):,} trades across {len(months_in(trades))} months in total.")
+                else:
+                    incoming, dropped = dedupe_trades(incoming)
+                    save_trades(incoming, result.excluded, upload.name)
+                    trades = incoming
+                    st.success(f"Imported {len(trades):,} trades across {len(months_in(trades))} months from {upload.name}"
+                               + (f" ({dropped:,} duplicates within the file skipped)." if dropped else "."))
+                with st.expander("Per-tab summary and column mapping"):
+                    for note in result.notes:
+                        st.write(note)
+                    st.dataframe(pd.DataFrame({"Your header": list(result.mapping), "Used as": list(result.mapping.values())}),
+                                 width="stretch", hide_index=True)
+                if not result.excluded.empty:
+                    with st.expander(f"Excluded rows ({len(result.excluded)})"):
+                        st.dataframe(result.excluded, width="stretch", hide_index=True)
 else:
     st.caption("Fill in one trade and press **Add trade**. P&L, gross profit, investment and ROI are calculated for you.")
     with st.form("add_trade", clear_on_submit=True, border=True):
@@ -190,6 +211,31 @@ if existing is not None and not existing.empty and set(existing["month"]) != set
 cap = capital_frame(months, existing, trades)
 if "capital" in trades:
     st.caption("Your file has a Capital column; its per-month average is pre-filled. You can overwrite it.")
+
+with st.expander("Upload a monthly capital sheet (Month + Capital columns; the 'Average of Capital' pivot works as-is)",
+                 expanded=st.session_state.get("capital_upload") is not None):
+    cap_upload = st.file_uploader("Capital sheet", type=["xlsx", "xlsm", "xls", "csv"], key="capital_upload")
+    if cap_upload is not None:
+        cap_sheet = 0
+        if cap_upload.name.lower().endswith(EXCEL_EXTENSIONS):
+            try:
+                cap_sheets = list_sheets(cap_upload)
+                if len(cap_sheets) > 1:
+                    cap_sheet = st.selectbox("Tab with the capital table", cap_sheets, key="capital_sheet")
+            except Exception as exc:
+                st.error(f"Could not open the workbook: {exc}")
+        parsed, cap_errors = load_capital_sheet(cap_upload, cap_upload.name, cap_sheet)
+        for e in cap_errors:
+            st.error(e)
+        if parsed is not None:
+            matched = parsed[parsed["month"].isin(months)]
+            st.caption(f"{len(parsed)} months in the sheet; {len(matched)} match months in your trades.")
+            if st.button("Use these capital figures", disabled=matched.empty):
+                lookup = matched.set_index("month")["Capital"]
+                cap["Capital"] = cap["month"].map(lookup).astype("Float64").fillna(cap["Capital"])
+                state.put_frame("capital", cap)
+                state.bump("capital_version")
+                st.rerun()
 
 bulk_col, grid_col = st.columns([1, 2])
 with bulk_col:

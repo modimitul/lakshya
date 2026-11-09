@@ -11,8 +11,10 @@ from core.parse import EXCEL_EXTENSIONS, list_sheets
 from core.portfolio import (
     COMMON_SECTORS,
     PortfolioResult,
+    dedupe_entries,
     entry_from_form,
-    load_portfolio,
+    load_portfolio_multi,
+    looks_like_portfolio_sheet,
     portfolio_template_bytes,
 )
 
@@ -51,33 +53,46 @@ if mode == "Upload a file":
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
     with c1:
         upload = st.file_uploader(
-            "Portfolio file (.xlsx, .xlsm, .xls, .csv). Uploading replaces this owner's current holdings.",
+            "Portfolio file (.xlsx, .xlsm, .xls, .csv). Several tabs are fine: pick them below.",
             type=["xlsx", "xlsm", "xls", "csv"], key="portfolio_upload",
             help="Columns: MONTH, SECTORS, STOCK, QTY, BUY, COST, GIFT AMOUNT. Months may be dates or text like Jul-23.",
         )
     if upload is not None:
-        sheet = 0
+        sheets = [0]
         if upload.name.lower().endswith(EXCEL_EXTENSIONS):
             try:
                 sheets = list_sheets(upload)
             except Exception as exc:
                 sheets = []
                 st.error(f"Could not open the workbook: {exc}")
-            if len(sheets) > 1:
-                sheet = st.selectbox("Sheet", sheets, index=0)
-        result = load_portfolio(upload, upload.name, sheet)
-        show_messages(result)
-        if result.ok:
-            fingerprint = f"{upload.name}:{upload.size}:{sheet}"
-            if st.session_state.get("last_portfolio_upload") != fingerprint:
-                save_portfolio(result.entries, upload.name)
-                st.session_state["last_portfolio_upload"] = fingerprint
-                entries = result.entries
-            st.success(f"Loaded {len(result.entries):,} holdings worth {inr(result.entries['cost'].sum(), prefix='₹')} from {upload.name}.")
-            with st.expander("Preview and column mapping"):
-                st.dataframe(result.entries.head(20), width="stretch", hide_index=True)
-                st.dataframe(pd.DataFrame({"Your header": list(result.mapping), "Used as": list(result.mapping.values())}),
-                             width="stretch", hide_index=True)
+        chosen = sheets
+        if len(sheets) > 1:
+            detected = [sh for sh in sheets if looks_like_portfolio_sheet(upload, upload.name, sh)]
+            chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets, key="portfolio_tabs")
+        how = st.radio("How to import", ["Replace this owner's holdings", "Add to existing holdings (duplicates skipped)"],
+                       horizontal=True, index=0 if entries is None or entries.empty else 1, key="portfolio_how")
+        if st.button("Import", type="primary", disabled=not chosen, key="portfolio_import"):
+            result = load_portfolio_multi(upload, upload.name, chosen)
+            show_messages(result)
+            if result.ok:
+                incoming = result.entries
+                if how.startswith("Add") and entries is not None and not entries.empty:
+                    merged, dropped = dedupe_entries(pd.concat([entries, incoming], ignore_index=True))
+                    added = len(merged) - len(entries)
+                    save_portfolio(merged, f"{state.get_meta().get('portfolio_source', '')} + {upload.name}".strip(" +"))
+                    entries = merged
+                    st.success(f"Added {added:,} holdings from {upload.name} ({dropped:,} duplicates skipped); "
+                               f"{len(entries):,} in total worth {inr(entries['cost'].sum(), prefix='₹')}.")
+                else:
+                    incoming, dropped = dedupe_entries(incoming)
+                    save_portfolio(incoming, upload.name)
+                    entries = incoming
+                    st.success(f"Imported {len(entries):,} holdings worth {inr(entries['cost'].sum(), prefix='₹')} from {upload.name}.")
+                with st.expander("Per-tab summary and column mapping"):
+                    for note in result.notes:
+                        st.write(note)
+                    st.dataframe(pd.DataFrame({"Your header": list(result.mapping), "Used as": list(result.mapping.values())}),
+                                 width="stretch", hide_index=True)
 else:
     known_sectors = sorted(set(COMMON_SECTORS) | (set(entries["sector"].dropna()) if entries is not None else set()))
     with st.form("add_entry", clear_on_submit=True, border=True):
@@ -128,7 +143,7 @@ if entries is not None and not entries.empty:
         view["month"] = view["month"].dt.strftime("%b-%y")
         view["% Investment"] = (view["cost"] / total * 100) if total else pd.NA
         view = view.rename(columns={"month": "Month", "sector": "Sector", "stock": "Stock", "qty": "Qty",
-                                    "buy": "Buy", "cost": "Cost", "gift": "Gift"})
+                                    "buy": "Buy", "cost": "Cost", "gift": "Gift", "source_sheet": "Sheet"})
         view.insert(0, "Remove", False)
         edited = st.data_editor(
             view, hide_index=True, width="stretch", height=min(len(view) + 1, 12) * 35 + 3,
