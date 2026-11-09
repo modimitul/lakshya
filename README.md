@@ -10,7 +10,7 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Home | Status card per owner, owner names, how the numbers are calculated |
 | Trading Book | Trades by upload or an *Add trade* form; monthly capital; annual ROI vs benchmarks (Nifty, Bank Nifty, NASDAQ, …) |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
-| Dashboards → Trading | KPIs, monthly table (capital, net profit, brokerage, ROI, win rate), capital and brokerage pivots with Grand Total, annual ROI vs benchmarks, breakdown by stock/strategy, trade log, Excel download |
+| Dashboards → Trading | Year filter; KPIs; yearly table (Investments = avg capital, Net Profit, Yearly ROI, with Grand Total); monthly table (capital, net profit, brokerage, ROI, win rate); capital and brokerage pivots; annual ROI vs benchmarks; breakdown by stock/strategy; trade log; Excel download |
 | Dashboards → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt) with a sub-tab per class: holdings by stock with % Investment, sector allocation, gifts; Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners. Each
@@ -25,7 +25,8 @@ owners can save at the same moment safely.
 | Net Profit | Sum of each trade's `Gross Profit` for the month (P&L minus brokerage and charges). Derived from Qty × (Sell − Buy) − charges if the file lacks it. |
 | Average of Capital | Entered per month on the Trading Book screen (or the per-month mean of a `Capital` column). Grand Total = average of months. |
 | Brokerage | Sum of `Brokerage & Other Charges` per month. Grand Total = sum. |
-| Monthly ROI | Net Profit ÷ Average of Capital × 100. Grand Total and yearly `Z ROI%` = sum of monthly ROI. |
+| Monthly ROI | Net Profit ÷ Average of Capital × 100. The monthly Grand Total and the benchmark table's `Z ROI%` = sum of monthly ROI. |
+| Yearly ROI | Year's Net Profit ÷ Investments × 100, where Investments = average of that year's monthly capital. Grand Total averages Investments and ROI across years. |
 | Benchmarks (Nifty ROI%, …) | Entered per year by the user or uploaded; not derivable from a trade log. Grand Total = sum of years. |
 | % Investment | Stock cost ÷ total cost of the holdings currently shown × 100 (inside a class tab, the class total). |
 | Asset class | From the SECTORS label, then the stock name: ETF/BEES → ETF; MF/MUTUAL/FUND → Equity MF; DEBT/BOND/SGB/GILT/LIQUID/FD/NCD → Debt; otherwise Equity. Adjust per owner under *Asset class rules* on the Investments tab. |

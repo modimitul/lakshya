@@ -322,3 +322,26 @@ def test_asset_class_rules_and_overrides():
     assert summary["Cost"].tolist() == [700, 700, 300, 400]
     assert sector_class_map(entries, {"GOLD": "Debt"})["GOLD"] == "Debt"
     assert with_asset_class(entries, {"GOLD": "Debt"}).query("stock == 'GOLDBEES'")["asset_class"].iat[0] == "Debt"
+
+
+# ------------------------------------------------------------------ yearly ----
+def test_yearly_summary_matches_the_year_labels_pivot():
+    from core.metrics import yearly_summary, yearly_with_total
+    # two years; 2026 has one month without capital, which must still count toward profit
+    summary = pd.DataFrame({
+        "month": pd.to_datetime(["2025-11-01", "2025-12-01", "2026-01-01", "2026-02-01", "2026-03-01"]),
+        "Average of Capital": pd.array([2500000, 3050000, 1500000, 2175000, None], dtype="Float64"),
+        "Net Profit": [200000.0, 229984.0, 100000.0, 200000.0, 108224.0],
+        "Brokerage": [1000.0, 1000.0, 500.0, 500.0, 500.0],
+        "Trades": [10, 12, 8, 9, 7],
+    })
+    y = yearly_summary(summary)
+    assert y["Year"].tolist() == [2025, 2026]
+    assert y["Investments"].tolist() == [2775000.0, 1837500.0]
+    assert y["Net Profit"].tolist() == [429984.0, 408224.0]
+    assert [round(v) for v in y["Yearly ROI"]] == [15, 22]          # 429984/2775000, 408224/1837500
+    t = yearly_with_total(y)
+    assert t.iloc[-1]["Year"] == "Grand Total"
+    assert t.iloc[-1]["Investments"] == pytest.approx((2775000 + 1837500) / 2)
+    assert t.iloc[-1]["Net Profit"] == pytest.approx(838208.0)
+    assert t.iloc[-1]["Yearly ROI"] == pytest.approx((y["Yearly ROI"].iloc[0] + y["Yearly ROI"].iloc[1]) / 2)

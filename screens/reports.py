@@ -7,7 +7,8 @@ import streamlit as st
 from core import state
 from core.benchmarks import BENCHMARK_COLUMNS, Z_COLUMN, normalise_table, with_grand_total
 from core.formatting import inr, pct
-from core.metrics import breakdown, brokerage_table, capital_table, kpis, monthly_summary, to_excel_bytes
+from core.metrics import (breakdown, brokerage_table, capital_table, kpis, monthly_summary, to_excel_bytes,
+                          yearly_summary, yearly_with_total)
 from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, holdings,
                             sector_allocation, sector_class_map, with_asset_class)
 
@@ -38,11 +39,21 @@ with trading_tab:
     else:
         capital = state.get_frame("capital")
         excluded = state.get_frame("excluded")
-        summary = monthly_summary(trades, capital)
-        k = kpis(summary, trades)
         meta = state.get_meta()
+        all_trades = trades
 
-        st.caption(f"Source: {meta.get('trades_source', 'manual entry')} · {k['trades']:,} trades · {k['months']} months")
+        years_available = sorted(int(y) for y in all_trades["month"].dt.year.dropna().unique())
+        yf, _ = st.columns([1, 3])
+        year_pick = yf.multiselect("Year", years_available, placeholder="All years",
+                                   help="Narrows the KPIs, monthly table and charts below. The yearly table always shows every year.")
+        if year_pick:
+            trades = all_trades[all_trades["month"].dt.year.isin(year_pick)]
+        summary = monthly_summary(trades, capital)
+        full_summary = summary if not year_pick else monthly_summary(all_trades, capital)
+        k = kpis(summary, trades)
+
+        st.caption(f"Source: {meta.get('trades_source', 'manual entry')} · {k['trades']:,} trades · {k['months']} months"
+                   + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Net profit", inr(k["net_profit"], prefix="₹"))
@@ -55,6 +66,40 @@ with trading_tab:
         if summary["Monthly ROI"].isna().any():
             n = int(summary["Monthly ROI"].isna().sum())
             st.warning(f"{n} month(s) have no capital figure, so their ROI is blank. Add it on the Trading Book screen.")
+
+        # ---- yearly table (always all years)
+        st.subheader("Yearly performance")
+        yearly = yearly_summary(full_summary)
+        if yearly.empty or yearly["Yearly ROI"].isna().all():
+            st.info("Yearly ROI needs monthly capital. Enter it on the Trading Book screen.")
+        yt = yearly_with_total(yearly)
+        shown_y = pd.DataFrame({
+            "Year": yt["Year"],
+            "Investments": yt["Investments"].map(inr),
+            "Net Profit": yt["Net Profit"].map(inr),
+            "Yearly ROI": yt["Yearly ROI"].map(lambda v: pct(v, 0)),
+            "Brokerage": yt["Brokerage"].map(inr),
+            "Trades": yt["Trades"],
+        })
+        y1, y2 = st.columns([1, 1])
+        y1.dataframe(shown_y, hide_index=True, width="stretch", height=(len(shown_y) + 1) * 35 + 3)
+        y1.caption("Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
+                   "Grand Total averages Investments and ROI across years and sums the rest.")
+        with y2:
+            fig = go.Figure()
+            fig.add_bar(name="Net profit (₹)", x=yearly["Year"].astype(str), y=yearly["Net Profit"],
+                        marker_color=[GREEN if v >= 0 else RED for v in yearly["Net Profit"]],
+                        text=yearly["Net Profit"].map(inr), textposition="outside",
+                        hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+            fig.add_scatter(name="Yearly ROI (%)", x=yearly["Year"].astype(str), y=yearly["Yearly ROI"], yaxis="y2",
+                            mode="lines+markers+text", text=yearly["Yearly ROI"].map(lambda v: pct(v, 0)),
+                            textposition="top center", line=dict(color=BLUE, width=2),
+                            hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
+            fig.update_layout(title="Net profit and ROI by year", margin=MARGIN, height=380,
+                              xaxis=dict(type="category"), yaxis=dict(title="₹"),
+                              yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False, rangemode="tozero"),
+                              legend=dict(orientation="h", y=-0.2))
+            st.plotly_chart(fig, width="stretch", key="yearly_chart")
 
         # ---- monthly table
         st.subheader("Monthly performance")
@@ -167,7 +212,8 @@ with trading_tab:
                 st.dataframe(excluded, hide_index=True, width="stretch")
 
         st.subheader("Download")
-        sheets = {"Monthly Summary": summary, "Capital": capital_table(summary), "Brokerage": brokerage_table(summary)}
+        sheets = {"Yearly": yearly_with_total(yearly_summary(full_summary)), "Monthly Summary": summary,
+                  "Capital": capital_table(summary), "Brokerage": brokerage_table(summary)}
         if bench is not None and not bench.empty:
             sheets["Annual ROI"] = with_grand_total(bench)
         for dim in dimensions:

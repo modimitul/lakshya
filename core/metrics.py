@@ -139,3 +139,44 @@ def brokerage_table(summary: pd.DataFrame) -> pd.DataFrame:
     brk = summary[["Month", "Brokerage"]].copy()
     total = pd.DataFrame([{"Month": "Grand Total", "Brokerage": pd.to_numeric(brk["Brokerage"], errors="coerce").sum(min_count=1)}])
     return pd.concat([brk, total], ignore_index=True)
+
+
+def yearly_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    """Per year: Investments (mean of monthly capital), Net Profit (sum), Yearly ROI = profit / investments × 100.
+
+    Matches the source sheet's 'Year Labels' pivot. Months without a capital
+    figure are left out of the Investments average but counted in Net Profit.
+    """
+    if summary.empty:
+        return pd.DataFrame(columns=["Year", "Investments", "Net Profit", "Brokerage", "Trades", "Yearly ROI"])
+    years = summary["month"].dt.year
+    g = summary.groupby(years)
+    out = pd.DataFrame({
+        "Investments": g["Average of Capital"].apply(lambda s: pd.to_numeric(s, errors="coerce").mean()),
+        "Net Profit": g["Net Profit"].sum(),
+        "Brokerage": g["Brokerage"].apply(lambda s: pd.to_numeric(s, errors="coerce").sum()),
+        "Trades": g["Trades"].sum(),
+    }).reset_index().rename(columns={"month": "Year"})
+    out["Year"] = out["Year"].astype(int)
+    inv = pd.to_numeric(out["Investments"], errors="coerce")
+    out["Yearly ROI"] = out["Net Profit"] / inv.where(inv > 0) * 100
+    return out.sort_values("Year").reset_index(drop=True)
+
+
+def yearly_with_total(yearly: pd.DataFrame) -> pd.DataFrame:
+    """Append the Grand Total row: Investments and ROI averaged across years, the rest summed."""
+    if yearly.empty:
+        return yearly
+    inv = pd.to_numeric(yearly["Investments"], errors="coerce")
+    roi = pd.to_numeric(yearly["Yearly ROI"], errors="coerce")
+    total = pd.DataFrame([{
+        "Year": "Grand Total",
+        "Investments": inv.mean(),
+        "Net Profit": yearly["Net Profit"].sum(),
+        "Brokerage": pd.to_numeric(yearly["Brokerage"], errors="coerce").sum(),
+        "Trades": int(yearly["Trades"].sum()),
+        "Yearly ROI": roi.mean(),
+    }])
+    shown = yearly.copy()
+    shown["Year"] = shown["Year"].astype(str)
+    return pd.concat([shown, total], ignore_index=True)
