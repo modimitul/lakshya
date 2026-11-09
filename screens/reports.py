@@ -52,14 +52,16 @@ with trading_tab:
         full_summary = summary if not year_pick else monthly_summary(all_trades, capital)
         k = kpis(summary, trades)
 
-        st.caption(f"Source: {meta.get('trades_source', 'manual entry')} · {k['trades']:,} trades · {k['months']} months"
+        st.caption(f"Source: {meta.get('trades_source', 'manual entry')} · {k['trades']:,} trades"
+                   + (f" + {k['charges']:,} charge entries" if k.get("charges") else "") + f" · {k['months']} months"
                    + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Net profit", inr(k["net_profit"], prefix="₹"))
         c2.metric("Avg monthly ROI", f"{pct(k['avg_roi'])}%" if k["avg_roi"] is not None else "—",
                   help=f"Simple average over the {k['months_with_roi']} month(s) that have a capital figure.")
-        c3.metric("Win rate", f"{pct(k['win_rate'], 1)}%" if k["win_rate"] is not None else "—")
+        c3.metric("Win rate", f"{pct(k['win_rate'], 1)}%" if k["win_rate"] is not None else "—",
+                  help="Share of trades with positive gross profit. Charge entries (brokerage, DP/AMC charges …) are not trades and are excluded.")
         c4.metric("Best month", k["best_month"][0], inr(k["best_month"][1]))
         c5.metric("Worst month", k["worst_month"][0], inr(k["worst_month"][1]))
 

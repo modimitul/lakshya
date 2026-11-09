@@ -25,6 +25,8 @@ owners can save at the same moment safely.
 | Net Profit | Sum of each trade's `Gross Profit` for the month (P&L minus brokerage and charges). Derived from Qty × (Sell − Buy) − charges if the file lacks it. |
 | Average of Capital | Entered per month on the Trading Book screen (or the per-month mean of a `Capital` column). Grand Total = average of months. |
 | Brokerage | Sum of `Brokerage & Other Charges` per month. Grand Total = sum. |
+| Charge entries | Rows whose Strike Price reads BROKERAGE / …CHARGES (or with Buy = Sell = P/L = 0 and charges > 0) are costs, not trades: they count in Net Profit and Brokerage but not in trade counts or win rate. Rows labelled FUTURE / EQUITY / MF with real prices remain trades. |
+| Win rate | Trades with positive gross profit ÷ trades, excluding charge entries. |
 | Monthly ROI | Net Profit ÷ Average of Capital × 100. The monthly Grand Total and the benchmark table's `Z ROI%` = sum of monthly ROI. |
 | Yearly ROI | Year's Net Profit ÷ Investments × 100, where Investments = average of that year's monthly capital. Grand Total averages Investments and ROI across years. |
 | Benchmarks (Nifty ROI%, …) | Entered per year by the user or uploaded; not derivable from a trade log. Grand Total = sum of years. |

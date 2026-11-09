@@ -67,6 +67,9 @@ COMMON_TRADE_TYPES = [
 
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm", ".xls")
 
+# Strike-price text that marks a charge entry rather than a trade (case-insensitive).
+CHARGE_PATTERN = re.compile(r"BROKERAGE|CHARGE|FEE|\bTAX\b|\bSTT\b|\bGST\b|INTEREST|PENALTY|\bDP\b|\bAMC\b|PLEDGE")
+
 
 @dataclass
 class ParseResult:
@@ -329,6 +332,12 @@ def clean(raw: pd.DataFrame) -> ParseResult:
     df = raw[list(mapping)].rename(columns=mapping).copy()
     result = ParseResult(trades=df, mapping=mapping)
 
+    # Non-numeric strike text (BROKERAGE, FUTURE, EQUITY, MF ...) is kept as a label.
+    if "strike" in df:
+        as_text = df["strike"].astype("string").str.strip()
+        numeric = coerce_numeric(df["strike"])
+        df["strike_label"] = as_text.where(numeric.isna() & as_text.notna() & (as_text != ""), pd.NA).str.upper()
+
     # Excel error cells (#NUM!, #DIV/0!) arrive as text; coerce them to NaN.
     for col in NUMERIC_COLUMNS:
         if col in df:
@@ -369,6 +378,18 @@ def clean(raw: pd.DataFrame) -> ParseResult:
     if "roi" not in df and {"pl", "inv_amount"} <= set(df):
         inv = df["inv_amount"].where(df["inv_amount"] > 0)
         df["roi"] = df["pl"] / inv * 100
+
+    # Charge entries (brokerage, DP/AMC/pledge charges ...) are costs, not trades:
+    # they count in Net Profit and Brokerage but not in trade counts or win rate.
+    df["entry_kind"] = pd.Series(["trade"] * len(df), index=df.index, dtype="string")
+    if len(df):
+        label_hit = df["strike_label"].fillna("").str.contains(CHARGE_PATTERN, regex=True) if "strike_label" in df else pd.Series(False, index=df.index)
+        zero = lambda c: (df[c].fillna(0) == 0) if c in df else pd.Series(True, index=df.index)
+        structural = zero("pl") & zero("buy") & zero("sell") & (df["brokerage"].fillna(0) > 0 if "brokerage" in df else False)
+        df.loc[label_hit | structural, "entry_kind"] = "charge"
+        n_charges = int((df["entry_kind"] == "charge").sum())
+        if n_charges:
+            result.notes.append(f"{n_charges} rows are charge entries (brokerage, DP/AMC charges …): counted in net profit, not as trades.")
 
     # Month to group by: an explicit Month column wins; the buy date only fills
     # blanks. Text periods such as "YEAR 2026" are not months and are set aside.

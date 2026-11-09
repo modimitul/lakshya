@@ -12,7 +12,16 @@ import pandas as pd
 
 from .formatting import EXCEL_INR_FORMAT
 
-SUMMARY_COLUMNS = ["month", "Month", "Trades", "Average of Capital", "Net Profit", "Brokerage", "Monthly ROI", "Win rate"]
+SUMMARY_COLUMNS = ["month", "Month", "Trades", "Charges", "Average of Capital", "Net Profit", "Brokerage", "Monthly ROI", "Win rate"]
+
+
+def charge_mask(trades: pd.DataFrame) -> pd.Series:
+    """True for charge entries. Works for data stored before entry_kind existed."""
+    if "entry_kind" in trades:
+        return trades["entry_kind"].fillna("trade") == "charge"
+    zero = lambda c: (trades[c].fillna(0) == 0) if c in trades else pd.Series(True, index=trades.index)
+    brok = trades["brokerage"].fillna(0) > 0 if "brokerage" in trades else pd.Series(False, index=trades.index)
+    return zero("pl") & zero("buy") & zero("sell") & brok
 
 
 def month_label(ts: pd.Timestamp) -> str:
@@ -54,13 +63,18 @@ def monthly_summary(trades: pd.DataFrame, capital: pd.DataFrame | None = None) -
     if trades.empty or "month" not in trades:
         return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
+    is_charge = charge_mask(trades)
     grouped = trades.groupby("month", sort=True)
+    real = trades[~is_charge].groupby("month", sort=True)
     out = pd.DataFrame({
-        "Trades": grouped.size(),
+        "Trades": real.size(),
         "Net Profit": grouped["gross_profit"].sum(),
         "Brokerage": grouped["brokerage"].sum() if "brokerage" in trades else pd.NA,
-        "Wins": grouped["gross_profit"].apply(lambda s: int((s > 0).sum())),
+        "Wins": real["gross_profit"].apply(lambda s: int((s > 0).sum())),
+        "Charges": grouped.apply(lambda g: int(is_charge.loc[g.index].sum())),
     }).reset_index()
+    out["Trades"] = out["Trades"].fillna(0).astype(int)
+    out["Wins"] = out["Wins"].fillna(0).astype(int)
 
     cap = capital_frame(list(out["month"]), capital, trades)
     out = out.merge(cap[["month", "Capital"]], on="month", how="left")
@@ -80,13 +94,15 @@ def kpis(summary: pd.DataFrame, trades: pd.DataFrame) -> dict:
     roi = summary["Monthly ROI"].dropna()
     best = summary.loc[summary["Net Profit"].idxmax()]
     worst = summary.loc[summary["Net Profit"].idxmin()]
-    gp = trades["gross_profit"] if "gross_profit" in trades else pd.Series(dtype=float)
+    real = trades[~charge_mask(trades)]
+    gp = real["gross_profit"] if "gross_profit" in real else pd.Series(dtype=float)
     return {
         "net_profit": float(summary["Net Profit"].sum()),
         "avg_roi": float(roi.mean()) if not roi.empty else None,
         "months_with_roi": int(roi.size),
         "months": int(len(summary)),
         "trades": int(summary["Trades"].sum()),
+        "charges": int(summary["Charges"].sum()) if "Charges" in summary else 0,
         "win_rate": float((gp > 0).mean() * 100) if len(gp) else None,
         "best_month": (best["Month"], float(best["Net Profit"])),
         "worst_month": (worst["Month"], float(worst["Net Profit"])),
@@ -97,14 +113,17 @@ def breakdown(trades: pd.DataFrame, by: str) -> pd.DataFrame:
     """Trades, net profit, win rate and mean ROI grouped by `by` (e.g. stock, type)."""
     if by not in trades or trades.empty:
         return pd.DataFrame()
+    is_charge = charge_mask(trades)
     grouped = trades.groupby(by, dropna=True)
+    real = trades[~is_charge].groupby(by, dropna=True)
     out = pd.DataFrame({
-        "Trades": grouped.size(),
+        "Trades": real.size(),
         "Net Profit": grouped["gross_profit"].sum(),
-        "Win rate": grouped["gross_profit"].apply(lambda s: float((s > 0).mean() * 100)),
+        "Win rate": real["gross_profit"].apply(lambda s: float((s > 0).mean() * 100) if len(s) else float("nan")),
     })
+    out["Trades"] = out["Trades"].fillna(0).astype(int)
     if "roi" in trades:
-        out["Avg trade ROI"] = grouped["roi"].mean()
+        out["Avg trade ROI"] = real["roi"].mean()
     return out.sort_values("Net Profit", ascending=False).reset_index().rename(columns={by: by.title()})
 
 

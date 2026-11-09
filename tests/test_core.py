@@ -345,3 +345,32 @@ def test_yearly_summary_matches_the_year_labels_pivot():
     assert t.iloc[-1]["Investments"] == pytest.approx((2775000 + 1837500) / 2)
     assert t.iloc[-1]["Net Profit"] == pytest.approx(838208.0)
     assert t.iloc[-1]["Yearly ROI"] == pytest.approx((y["Yearly ROI"].iloc[0] + y["Yearly ROI"].iloc[1]) / 2)
+
+
+# ----------------------------------------------------------- charge entries ----
+def test_charge_entries_are_not_trades_but_still_cost_money():
+    from core.metrics import monthly_summary, kpis, breakdown, charge_mask
+    raw = pd.DataFrame({
+        "Buy Date": ["2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04", "2026-04-05"],
+        "Month": ["2026-04-01"] * 5,
+        "STOCK": ["TCS", "EQUITY SIP", "EQUITY SIP", "TCS", "INFY"],
+        "Strike Price": [3400, "BROKERAGE", "DP Charges", "FUTURE", 1500],
+        "TYPE": ["Naked Put Sell", "Equity", "Equity", "FUTURE Long", "Naked Put Sell"],
+        "QTY": [175, 1, 1, 175, 400], "Buy": [52.13, 0, 0, 2325, 20], "Sell": [58.88, 0, 0, 2335, 15],
+        "Brokerage & Other Charges": [48.5, 240.82, 15.34, 60, 40],
+    })
+    result = clean(raw)
+    t = result.trades
+    assert t["entry_kind"].tolist() == ["trade", "charge", "charge", "trade", "trade"]
+    assert t["strike_label"].tolist()[1:4] == ["BROKERAGE", "DP CHARGES", "FUTURE"]
+    assert any("charge entries" in n for n in result.notes)
+    summary = monthly_summary(t)
+    assert summary["Trades"].iat[0] == 3 and summary["Charges"].iat[0] == 2
+    assert summary["Net Profit"].iat[0] == pytest.approx(t["gross_profit"].sum())      # charges still cost money
+    k = kpis(summary, t)
+    assert k["win_rate"] == pytest.approx(2 / 3 * 100) and k["trades"] == 3 and k["charges"] == 2
+    by_type = breakdown(t, "type").set_index("Type")
+    assert by_type.loc["Equity", "Trades"] == 0 and by_type.loc["Equity", "Net Profit"] < 0
+    # data saved before entry_kind existed is classified structurally
+    legacy = t.drop(columns=["entry_kind", "strike_label"])
+    assert charge_mask(legacy).tolist() == [False, True, True, False, False]

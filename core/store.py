@@ -38,7 +38,7 @@ DATE_COLUMNS = {
     "portfolio": ["month"],
     "benchmarks": [],
 }
-STRING_COLUMNS = ("stock", "type", "sector", "Month", "period_label", "source_sheet")
+STRING_COLUMNS = ("stock", "type", "sector", "Month", "period_label", "source_sheet", "entry_kind", "strike_label")
 
 _engines: dict[str, Engine] = {}
 _write_lock = threading.RLock()  # serialise writes within this process; the DB handles other processes
