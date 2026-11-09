@@ -33,16 +33,16 @@ for i, u in enumerate(users):
 st.write("")
 l, m, r = st.columns(3)
 with l:
-    st.subheader("User Input (Trading)")
+    st.subheader("Trading Book")
     st.write("Upload a trade log or add trades one at a time, set monthly capital, enter annual benchmark returns.")
     st.page_link("screens/trading_input.py", label="Open", icon="📥")
 with m:
-    st.subheader("Long Term Portfolio")
+    st.subheader("Investment Book")
     st.write("Upload holdings or add them one at a time: month, sector, stock, quantity, buy price, gifts.")
     st.page_link("screens/portfolio_input.py", label="Open", icon="📥")
 with r:
-    st.subheader("Reports")
-    st.write("Trading dashboard (monthly ROI, capital, brokerage, annual ROI vs Nifty and others) and the Long Term Investment dashboard.")
+    st.subheader("Dashboards")
+    st.write("Trading (monthly ROI, capital, brokerage, annual ROI vs Nifty and others) and Investments (holdings, sectors, % investment).")
     st.page_link("screens/reports.py", label="Open", icon="📊")
 
 with st.expander("Manage portfolio owners"):

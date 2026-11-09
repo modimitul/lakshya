@@ -2,8 +2,10 @@
 # One-shot server setup for Ubuntu 22.04 / 24.04 on AWS Lightsail (works on any Ubuntu VM).
 # Safe to re-run: it updates the code and restarts the service.
 #
-# Usage (run inside the VM after SSH-ing in):
+# Usage (run inside the VM after SSH-ing in). Either pull the code from GitHub:
 #   REPO_URL=https://github.com/<user>/lakshya.git bash setup-lightsail.sh
+# or install from a zip you copied to the VM with scp (no GitHub needed):
+#   ZIP_PATH=~/lakshya.zip bash setup-lightsail.sh
 #
 # With a free DuckDNS hostname pointed at this VM's static IP, add DOMAIN to get HTTPS:
 #   DOMAIN=lakshya.duckdns.org REPO_URL=https://github.com/<user>/lakshya.git bash setup-lightsail.sh
@@ -14,7 +16,12 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:?Set REPO_URL to your git repository URL}"
+REPO_URL="${REPO_URL:-}"
+ZIP_PATH="${ZIP_PATH:-}"
+if [ -z "$REPO_URL" ] && [ -z "$ZIP_PATH" ]; then
+  echo "Set REPO_URL=<git repo url> or ZIP_PATH=<path to lakshya.zip> before running this script." >&2
+  exit 1
+fi
 DOMAIN="${DOMAIN:-}"
 APP_PASSWORD="${APP_PASSWORD:-}"
 APP_DIR="${APP_DIR:-$HOME/lakshya}"
@@ -26,7 +33,7 @@ log() { printf '\n==> %s\n' "$*"; }
 
 log "Installing system packages"
 sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv python3-pip git curl
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv python3-pip git curl unzip
 
 if ! swapon --show --noheadings | grep -q '^/swapfile'; then
   log "Adding 1 GB swap (needed on the 512 MB plan)"
@@ -37,7 +44,20 @@ if ! swapon --show --noheadings | grep -q '^/swapfile'; then
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 fi
 
-if [ -d "$APP_DIR/.git" ]; then
+if [ -n "$ZIP_PATH" ]; then
+  log "Installing code from $ZIP_PATH"
+  [ -f "$ZIP_PATH" ] || { echo "Zip not found: $ZIP_PATH" >&2; exit 1; }
+  TMP="$(mktemp -d)"
+  unzip -q -o "$ZIP_PATH" -d "$TMP"
+  SRC="$TMP"
+  [ -f "$SRC/app.py" ] || SRC="$(find "$TMP" -maxdepth 2 -name app.py -printf '%h' -quit)"
+  [ -n "$SRC" ] && [ -f "$SRC/app.py" ] || { echo "app.py not found inside the zip" >&2; exit 1; }
+  mkdir -p "$APP_DIR"
+  # Replace the code but keep data/ and the virtualenv from a previous install.
+  find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name data ! -name .venv -exec rm -rf {} +
+  cp -a "$SRC"/. "$APP_DIR"/
+  rm -rf "$TMP"
+elif [ -d "$APP_DIR/.git" ]; then
   log "Updating existing checkout in $APP_DIR"
   git -C "$APP_DIR" pull --ff-only
 else

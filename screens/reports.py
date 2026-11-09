@@ -11,13 +11,13 @@ from core.metrics import breakdown, brokerage_table, capital_table, kpis, monthl
 from core.portfolio import filter_entries, holdings, sector_allocation
 
 owner = state.user_name()
-st.title("Reports")
+st.title("Dashboards")
 st.caption(f"Portfolio owner: **{owner}**")
 
 GREEN, RED, BLUE = "#2E7D32", "#C62828", "#1F4E79"
 MARGIN = dict(t=50, b=20, l=10, r=10)
 
-trading_tab, invest_tab = st.tabs(["Trading dashboard", "Long Term Investment dashboard"])
+trading_tab, invest_tab = st.tabs(["Trading", "Investments"])
 
 
 def bar_signed(x, y, title, text=None, height=360, yaxis="₹"):
@@ -33,7 +33,7 @@ with trading_tab:
     trades = state.get_frame("trades")
     if trades is None or trades.empty:
         st.info("No trades loaded for this owner yet.")
-        st.page_link("screens/trading_input.py", label="Go to User Input (Trading)", icon="📥")
+        st.page_link("screens/trading_input.py", label="Go to Trading Book", icon="📥")
     else:
         capital = state.get_frame("capital")
         excluded = state.get_frame("excluded")
@@ -53,7 +53,7 @@ with trading_tab:
 
         if summary["Monthly ROI"].isna().any():
             n = int(summary["Monthly ROI"].isna().sum())
-            st.warning(f"{n} month(s) have no capital figure, so their ROI is blank. Add it on the User Input screen.")
+            st.warning(f"{n} month(s) have no capital figure, so their ROI is blank. Add it on the Trading Book screen.")
 
         # ---- monthly table
         st.subheader("Monthly performance")
@@ -90,7 +90,7 @@ with trading_tab:
                                        line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
             fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
             if roi.empty:
-                fig.add_annotation(text="Enter capital on the User Input screen to see ROI", showarrow=False)
+                fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
             st.plotly_chart(fig, width="stretch")
 
         # ---- capital & brokerage pivots
@@ -113,7 +113,7 @@ with trading_tab:
         st.subheader("Annual ROI % vs benchmarks")
         bench = state.get_frame("benchmarks")
         if bench is None or bench.empty or normalise_table(bench).drop(columns="Year").isna().all().all():
-            st.info("No annual figures yet. Enter them under User Input (Trading) → 3. Annual ROI and benchmarks.")
+            st.info("No annual figures yet. Enter them under Trading Book → 3. Annual ROI and benchmarks.")
         else:
             bench = normalise_table(bench)
             shown = with_grand_total(bench)
@@ -185,7 +185,7 @@ with invest_tab:
     entries = state.get_frame("portfolio")
     if entries is None or entries.empty:
         st.info("No long-term holdings loaded for this owner yet.")
-        st.page_link("screens/portfolio_input.py", label="Go to Long Term Portfolio", icon="📥")
+        st.page_link("screens/portfolio_input.py", label="Go to Investment Book", icon="📥")
     else:
         years = sorted(int(y) for y in entries["month"].dt.year.dropna().unique())
         sectors = sorted(entries["sector"].dropna().unique())
@@ -210,7 +210,7 @@ with invest_tab:
             c3.metric("Sectors", f"{len(alloc)}")
             c4.metric("Gifted", inr(gifts, prefix="₹"), help="Sum of GIFT AMOUNT in the selected holdings.")
 
-            title_bits = [owner, "Long Term Portfolio"] + ([", ".join(str(y) for y in year_pick)] if year_pick else [])
+            title_bits = [owner, "Investment Book"] + ([", ".join(str(y) for y in year_pick)] if year_pick else [])
             st.subheader(" · ".join(title_bits))
             shown = h.copy()
             shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")

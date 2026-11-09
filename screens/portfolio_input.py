@@ -1,4 +1,4 @@
-"""Long Term Portfolio input: equity holdings by month and sector (upload or form)."""
+"""Investment Book: equity holdings by month and sector (upload or form)."""
 
 import datetime as dt
 
@@ -19,7 +19,7 @@ from core.portfolio import (
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 owner = state.user_name()
-st.title("Long Term Portfolio")
+st.title("Investment Book")
 st.caption(f"Portfolio owner: **{owner}**. One row per purchase: month, sector, stock, quantity, buy price. "
            "Cost and % Investment are calculated.")
 
@@ -156,4 +156,4 @@ if entries is not None and not entries.empty:
 else:
     st.info("No holdings yet for this owner. Upload a file or add entries with the form.")
 
-st.page_link("screens/reports.py", label="Go to Reports", icon="📊")
+st.page_link("screens/reports.py", label="Go to Dashboards", icon="📊")

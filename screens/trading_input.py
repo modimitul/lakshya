@@ -1,4 +1,4 @@
-"""User Input (Trading): trades (upload or form), monthly capital, annual ROI vs benchmarks."""
+"""Trading Book: trades (upload or form), monthly capital, annual ROI vs benchmarks."""
 
 import datetime as dt
 
@@ -28,7 +28,7 @@ from core.parse import (
 )
 
 owner = state.user_name()
-st.title("User Input (Trading)")
+st.title("Trading Book")
 st.caption(f"Portfolio owner: **{owner}**. Everything on this screen is saved for {owner} as you go.")
 
 
@@ -269,4 +269,4 @@ try:
 except ValueError as exc:
     st.error(str(exc))
 
-st.page_link("screens/reports.py", label="Go to Reports", icon="📊")
+st.page_link("screens/reports.py", label="Go to Dashboards", icon="📊")

@@ -58,8 +58,8 @@ with st.sidebar:
         st.rerun()
 
 home = st.Page("screens/home.py", title="Home", icon=":material/home:", default=True)
-trading = st.Page("screens/trading_input.py", title="User Input (Trading)", icon=":material/upload_file:")
-portfolio = st.Page("screens/portfolio_input.py", title="Long Term Portfolio", icon=":material/account_balance:")
-reports = st.Page("screens/reports.py", title="Reports", icon=":material/bar_chart:")
+trading = st.Page("screens/trading_input.py", title="Trading Book", icon=":material/upload_file:")
+portfolio = st.Page("screens/portfolio_input.py", title="Investment Book", icon=":material/account_balance:")
+reports = st.Page("screens/reports.py", title="Dashboards", icon=":material/bar_chart:")
 
 st.navigation([home, trading, portfolio, reports]).run()

@@ -8,10 +8,10 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Screen | What it does |
 |---|---|
 | Home | Status card per owner, owner names, how the numbers are calculated |
-| User Input (Trading) | Trades by upload or an *Add trade* form; monthly capital; annual ROI vs benchmarks (Nifty, Bank Nifty, NASDAQ, …) |
-| Long Term Portfolio | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
-| Reports → Trading dashboard | KPIs, monthly table (capital, net profit, brokerage, ROI, win rate), capital and brokerage pivots with Grand Total, annual ROI vs benchmarks, breakdown by stock/strategy, trade log, Excel download |
-| Reports → Long Term Investment dashboard | Year / sector / month filters, holdings by stock with % Investment, sector allocation, gifts, Excel download |
+| Trading Book | Trades by upload or an *Add trade* form; monthly capital; annual ROI vs benchmarks (Nifty, Bank Nifty, NASDAQ, …) |
+| Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
+| Dashboards → Trading | KPIs, monthly table (capital, net profit, brokerage, ROI, win rate), capital and brokerage pivots with Grand Total, annual ROI vs benchmarks, breakdown by stock/strategy, trade log, Excel download |
+| Dashboards → Investments | Year / sector / month filters, holdings by stock with % Investment, sector allocation, gifts, Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners (two by
 default; rename or add more on Home). Each owner's data is saved on the server
@@ -22,7 +22,7 @@ under `data/<owner>/` as CSV, so it survives refreshes and restarts.
 | Figure | Source |
 |---|---|
 | Net Profit | Sum of each trade's `Gross Profit` for the month (P&L minus brokerage and charges). Derived from Qty × (Sell − Buy) − charges if the file lacks it. |
-| Average of Capital | Entered per month on the User Input screen (or the per-month mean of a `Capital` column). Grand Total = average of months. |
+| Average of Capital | Entered per month on the Trading Book screen (or the per-month mean of a `Capital` column). Grand Total = average of months. |
 | Brokerage | Sum of `Brokerage & Other Charges` per month. Grand Total = sum. |
 | Monthly ROI | Net Profit ÷ Average of Capital × 100. Grand Total and yearly `Z ROI%` = sum of monthly ROI. |
 | Benchmarks (Nifty ROI%, …) | Entered per year by the user or uploaded; not derivable from a trade log. Grand Total = sum of years. |
@@ -97,14 +97,24 @@ Everything is done in the AWS Console; no command-line tools on your laptop.
 4. **Firewall.** Same tab, **IPv4 Firewall → Add rule**: *Custom TCP 8501* for
    the plain-HTTP setup, or *HTTP 80* and *HTTPS 443* if you will use a domain.
    Optionally restrict the existing SSH rule to your own IP.
-5. **Put the code on GitHub.** Push this folder to a repository. Public is fine
-   (it contains no data or secrets); for a private repo run `gh auth login`
-   on the server before step 6.
-6. **Install.** Instance → **Connect using SSH** (browser terminal) and run:
+5. **Get the code onto the VM**, either way:
+   - *GitHub (recommended):* create a free account, a public repository named
+     `lakshya`, and upload this folder's contents through the browser
+     ("uploading an existing file", drag the folders in). No git commands needed.
+     For a private repo run `gh auth login` on the server before step 6.
+   - *No GitHub:* download the Lightsail default SSH key (Account → SSH keys)
+     and copy the zip from your laptop:
+     `scp -i LightsailDefaultKey-ap-south-1.pem lakshya.zip ubuntu@<static-ip>:~`
+6. **Install.** Instance → **Connect using SSH** (browser terminal) and run
+   one of these, with your GitHub username and a password of your choice:
 
    ```bash
+   # from GitHub
    curl -fsSL https://raw.githubusercontent.com/<user>/lakshya/main/deploy/setup-lightsail.sh -o setup.sh
    REPO_URL=https://github.com/<user>/lakshya.git APP_PASSWORD='choose-a-strong-password' bash setup.sh
+
+   # from the zip you copied with scp
+   unzip -o lakshya.zip && ZIP_PATH=~/lakshya.zip APP_PASSWORD='choose-a-strong-password' bash lakshya/deploy/setup-lightsail.sh
    ```
 
    The script adds swap, installs Python, clones the repo, creates a systemd
@@ -115,7 +125,8 @@ Everything is done in the AWS Console; no command-line tools on your laptop.
    It installs Caddy, which obtains and renews the certificate itself.
    Your URL becomes `https://lakshya.duckdns.org`.
 
-**Updating later:** push to GitHub, SSH in, re-run the same command. **Logs:**
+**Updating later:** push (or re-upload) to GitHub, or `scp` a new zip, then SSH
+in and re-run the same command; owner data under `data/` is kept. **Logs:**
 `journalctl -u lakshya -f`. **Restart:** `sudo systemctl restart lakshya`.
 
 ### Option C — Google Cloud Run (pay per use, scales to zero)
@@ -140,9 +151,9 @@ docker build -t lakshya . && docker run -p 8080:8080 lakshya
 ```
 app.py                      router (st.navigation), owner selector, password gate
 screens/home.py             status per owner, owner management
-screens/trading_input.py    trades (upload / form), monthly capital, benchmarks
-screens/portfolio_input.py  long-term holdings (upload / form)
-screens/reports.py          Trading dashboard + Long Term Investment dashboard
+screens/trading_input.py    Trading Book: trades (upload / form), monthly capital, benchmarks
+screens/portfolio_input.py  Investment Book: long-term holdings (upload / form)
+screens/reports.py          Dashboards: Trading and Investments tabs
 core/parse.py               header matching, type coercion, derived trade columns, templates
 core/portfolio.py           portfolio parsing, holdings, sector allocation
 core/benchmarks.py          annual ROI table, fill Z ROI% from trades, grand total
