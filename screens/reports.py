@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from core import state
-from core.benchmarks import BENCHMARK_COLUMNS, Z_COLUMN, normalise_table, with_grand_total
+from core.benchmarks import Z_COLUMN, comparison_table, cumulative_series, get_monthly, period_label
 from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, capital_table, kpis, monthly_summary, to_excel_bytes,
                           yearly_summary, yearly_with_total)
@@ -42,12 +42,17 @@ with trading_tab:
         meta = state.get_meta()
         all_trades = trades
 
-        years_available = sorted(int(y) for y in all_trades["month"].dt.year.dropna().unique())
-        yf, _ = st.columns([1, 3])
-        year_pick = yf.multiselect("Year", years_available, placeholder="All years",
+        yf, bf, _ = st.columns([1, 1.4, 1.6])
+        basis_label = bf.radio("Year basis", ["Calendar (Jan–Dec)", "Financial (Apr–Mar)"], horizontal=True,
+                               key="year_basis", help="Applies to the Year filter, the yearly table and the benchmark comparison.")
+        basis = "financial" if basis_label.startswith("Financial") else "calendar"
+        trade_periods = period_label(all_trades["month"], basis)
+        periods_available = list(pd.Series(trade_periods.values, index=all_trades["month"].values).dropna()
+                                 .groupby(level=0).first().sort_index().unique())
+        year_pick = yf.multiselect("Year", periods_available, placeholder="All years",
                                    help="Narrows the KPIs, monthly table and charts below. The yearly table always shows every year.")
         if year_pick:
-            trades = all_trades[all_trades["month"].dt.year.isin(year_pick)]
+            trades = all_trades[trade_periods.isin(year_pick).values]
         summary = monthly_summary(trades, capital)
         full_summary = summary if not year_pick else monthly_summary(all_trades, capital)
         k = kpis(summary, trades)
@@ -71,7 +76,7 @@ with trading_tab:
 
         # ---- yearly table (always all years)
         st.subheader("Yearly performance")
-        yearly = yearly_summary(full_summary)
+        yearly = yearly_summary(full_summary, basis)
         if yearly.empty or yearly["Yearly ROI"].isna().all():
             st.info("Yearly ROI needs monthly capital. Enter it on the Trading Book screen.")
         yt = yearly_with_total(yearly)
@@ -85,7 +90,8 @@ with trading_tab:
         })
         y1, y2 = st.columns([1, 1])
         y1.dataframe(shown_y, hide_index=True, width="stretch", height=(len(shown_y) + 1) * 35 + 3)
-        y1.caption("Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
+        y1.caption(("Financial years run April to March. " if basis == "financial" else "")
+                   + "Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
                    "Grand Total averages Investments and ROI across years and sums the rest.")
         with y2:
             fig = go.Figure()
@@ -157,30 +163,45 @@ with trading_tab:
             fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=380)
             st.plotly_chart(fig, width="stretch")
 
-        # ---- annual ROI vs benchmarks
-        st.subheader("Annual ROI % vs benchmarks")
-        bench = state.get_frame("benchmarks")
-        if bench is None or bench.empty or normalise_table(bench).drop(columns="Year").isna().all().all():
-            st.info("No annual figures yet. Enter them under Trading Book → 3. Annual ROI and benchmarks.")
+        # ---- my returns vs benchmarks (monthly data, summed per period over the owner's months)
+        st.subheader("My returns vs benchmarks")
+        bench_monthly = get_monthly()
+        series_options = [c for c in bench_monthly.columns if c != "month"]
+        default_series = [c for c in ("Nifty ROI", "Nifty BEES ROI", "GOLD BEES") if c in series_options] or series_options[:3]
+        picked = st.multiselect("Benchmarks to compare", series_options, default=default_series, key="cmp_series")
+        cmp = comparison_table(full_summary, bench_monthly, basis, picked or series_options)
+        if cmp.empty or cmp[Z_COLUMN].isna().all():
+            st.info("Monthly ROI needs capital figures (Trading Book → Monthly capital) before it can be compared.")
         else:
-            bench = normalise_table(bench)
-            shown = with_grand_total(bench)
-            display = shown.copy()
+            cmp_shown = cmp.copy()
+            display = cmp_shown.copy()
             for col in display.columns[1:]:
                 display[col] = display[col].map(lambda v: pct(v) if pd.notna(v) else "")
             st.dataframe(display, hide_index=True, width="stretch", height=(len(display) + 1) * 35 + 3)
-
-            series_options = [c for c in bench.columns if c != "Year" and bench[c].notna().any()]
-            default = [c for c in (Z_COLUMN, "Nifty ROI%") if c in series_options] or series_options[:2]
-            picked = st.multiselect("Series to chart", series_options, default=default)
-            if picked:
+            st.caption(f"{Z_COLUMN} and every benchmark are the SUM of monthly % returns within the "
+                       + ("financial year (Apr–Mar). " if basis == "financial" else "calendar year. ")
+                       + "Benchmarks are summed over the same months you have ROI, so part-years compare like for like. "
+                       "Grand Total sums the listed periods. Benchmark months are maintained on the Benchmarks screen.")
+            b1, b2 = st.columns(2)
+            with b1:
+                body = cmp_shown[cmp_shown["Period"] != "Grand Total"]
                 fig = go.Figure()
-                for col in picked:
-                    fig.add_bar(name=col, x=bench["Year"].astype(str), y=bench[col].astype(float),
+                for col in [Z_COLUMN] + [c for c in picked if c in body]:
+                    fig.add_bar(name=col, x=body["Period"].astype(str), y=pd.to_numeric(body[col], errors="coerce"),
                                 hovertemplate="%{x}: %{y:.2f}%<extra>" + col + "</extra>")
-                fig.update_layout(barmode="group", title="Annual return by year (%)", yaxis_title="%", margin=MARGIN, height=400,
-                                  legend=dict(orientation="h", y=-0.2))
-                st.plotly_chart(fig, width="stretch")
+                fig.update_layout(barmode="group", title="Return by period (%)", yaxis_title="%", margin=MARGIN, height=380,
+                                  xaxis=dict(type="category"), legend=dict(orientation="h", y=-0.25))
+                st.plotly_chart(fig, width="stretch", key="cmp_bars")
+            with b2:
+                cum = cumulative_series(full_summary, bench_monthly, picked)
+                fig = go.Figure()
+                for col in [Z_COLUMN] + [c for c in picked if c in cum]:
+                    fig.add_scatter(name=col, x=cum["Month"], y=cum[col], mode="lines+markers",
+                                    line=dict(width=3 if col == Z_COLUMN else 1.5),
+                                    hovertemplate="%{x}: %{y:.2f}%<extra>" + col + "</extra>")
+                fig.update_layout(title="Cumulative monthly return (%)", yaxis_title="%", margin=MARGIN, height=380,
+                                  legend=dict(orientation="h", y=-0.25))
+                st.plotly_chart(fig, width="stretch", key="cmp_cum")
 
         # ---- breakdown
         dimensions = [c for c in ("stock", "type") if c in trades]
@@ -214,10 +235,10 @@ with trading_tab:
                 st.dataframe(excluded, hide_index=True, width="stretch")
 
         st.subheader("Download")
-        sheets = {"Yearly": yearly_with_total(yearly_summary(full_summary)), "Monthly Summary": summary,
+        sheets = {"Yearly": yearly_with_total(yearly_summary(full_summary, basis)), "Monthly Summary": summary,
                   "Capital": capital_table(summary), "Brokerage": brokerage_table(summary)}
-        if bench is not None and not bench.empty:
-            sheets["Annual ROI"] = with_grand_total(bench)
+        if not cmp.empty:
+            sheets["Vs benchmarks"] = cmp
         for dim in dimensions:
             sheets[f"By {dim.title()}"] = breakdown(trades, dim)
         sheets["Trades"] = trades.assign(Month=trades["month"].dt.strftime("%b-%y"))

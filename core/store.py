@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 # Used only when there is no sign-in screen (no APP_PASSWORD) and no owners yet.
 DEFAULT_USERS = [{"slug": "owner", "name": "Owner"}]
 
-FRAME_TABLES = ("trades", "excluded", "capital", "benchmarks", "portfolio")
+FRAME_TABLES = ("trades", "excluded", "capital", "benchmarks", "portfolio", "benchmark_monthly")
 
 # Type restoration on read: SQLite is loosely typed, so we re-type by column name.
 DATE_COLUMNS = {
@@ -37,6 +37,7 @@ DATE_COLUMNS = {
     "capital": ["month"],
     "portfolio": ["month"],
     "benchmarks": [],
+    "benchmark_monthly": ["month"],
 }
 STRING_COLUMNS = ("stock", "type", "sector", "Month", "period_label", "source_sheet", "entry_kind", "strike_label")
 

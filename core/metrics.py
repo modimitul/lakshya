@@ -160,26 +160,32 @@ def brokerage_table(summary: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([brk, total], ignore_index=True)
 
 
-def yearly_summary(summary: pd.DataFrame) -> pd.DataFrame:
-    """Per year: Investments (mean of monthly capital), Net Profit (sum), Yearly ROI = profit / investments × 100.
+def yearly_summary(summary: pd.DataFrame, basis: str = "calendar") -> pd.DataFrame:
+    """Per year (calendar Jan–Dec) or financial year (Apr–Mar): Investments, Net Profit, Yearly ROI.
 
-    Matches the source sheet's 'Year Labels' pivot. Months without a capital
-    figure are left out of the Investments average but counted in Net Profit.
+    Investments = mean of the period's monthly capital; Yearly ROI = Net Profit / Investments × 100,
+    matching the source sheet's 'Year Labels' pivot. Months without capital count in
+    Net Profit but not in the Investments average.
     """
+    from .benchmarks import period_label
+
     if summary.empty:
         return pd.DataFrame(columns=["Year", "Investments", "Net Profit", "Brokerage", "Trades", "Yearly ROI"])
-    years = summary["month"].dt.year
-    g = summary.groupby(years)
+    labels = period_label(summary["month"], basis)
+    g = summary.groupby(labels, sort=False)
     out = pd.DataFrame({
         "Investments": g["Average of Capital"].apply(lambda s: pd.to_numeric(s, errors="coerce").mean()),
         "Net Profit": g["Net Profit"].sum(),
         "Brokerage": g["Brokerage"].apply(lambda s: pd.to_numeric(s, errors="coerce").sum()),
         "Trades": g["Trades"].sum(),
-    }).reset_index().rename(columns={"month": "Year"})
-    out["Year"] = out["Year"].astype(int)
+        "_first": g["month"].min(),
+    }).sort_values("_first").drop(columns="_first").reset_index().rename(columns={"month": "Year", "index": "Year"})
+    out.columns = ["Year" if c in ("Year", labels.name, 0) else c for c in out.columns]
+    if basis == "calendar":
+        out["Year"] = out["Year"].astype(int)
     inv = pd.to_numeric(out["Investments"], errors="coerce")
     out["Yearly ROI"] = out["Net Profit"] / inv.where(inv > 0) * 100
-    return out.sort_values("Year").reset_index(drop=True)
+    return out.reset_index(drop=True)
 
 
 def yearly_with_total(yearly: pd.DataFrame) -> pd.DataFrame:

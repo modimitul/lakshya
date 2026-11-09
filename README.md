@@ -8,9 +8,10 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Screen | What it does |
 |---|---|
 | Home | Status card per owner, owner names, how the numbers are calculated |
-| Trading Book | Trades by upload or an *Add trade* form; monthly capital; annual ROI vs benchmarks (Nifty, Bank Nifty, NASDAQ, …) |
+| Trading Book | Trades by upload or an *Add trade* form; monthly capital |
+| Benchmarks | Monthly % returns of indices/ETFs (Nifty, Nifty BEES, Bank Nifty, NIFTY IT, NASDAQ, DJI, MAFANG, Gold BEES, Silver BEES), shared by all owners; grid or upload; ships with Apr-2022 → Oct-2026 built in |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
-| Dashboards → Trading | Year filter; KPIs; yearly table (Investments = avg capital, Net Profit, Yearly ROI, with Grand Total); monthly table (capital, net profit, brokerage, ROI, win rate); capital and brokerage pivots; annual ROI vs benchmarks; breakdown by stock/strategy; trade log; Excel download |
+| Dashboards → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs; yearly table (Investments = avg capital, Net Profit, Yearly ROI, with Grand Total); monthly table; capital and brokerage pivots; *My returns vs benchmarks* per year/FY with cumulative chart; breakdown by stock/strategy; trade log; Excel download |
 | Dashboards → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt) with a sub-tab per class: holdings by stock with % Investment, sector allocation, gifts; Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners. Each
@@ -27,9 +28,9 @@ owners can save at the same moment safely.
 | Brokerage | Sum of `Brokerage & Other Charges` per month. Grand Total = sum. |
 | Charge entries | Rows whose Strike Price reads BROKERAGE / …CHARGES (or with Buy = Sell = P/L = 0 and charges > 0) are costs, not trades: they count in Net Profit and Brokerage but not in trade counts or win rate. Rows labelled FUTURE / EQUITY / MF with real prices remain trades. |
 | Win rate | Trades with positive gross profit ÷ trades, excluding charge entries. |
-| Monthly ROI | Net Profit ÷ Average of Capital × 100. The monthly Grand Total and the benchmark table's `Z ROI%` = sum of monthly ROI. |
-| Yearly ROI | Year's Net Profit ÷ Investments × 100, where Investments = average of that year's monthly capital. Grand Total averages Investments and ROI across years. |
-| Benchmarks (Nifty ROI%, …) | Entered per year by the user or uploaded; not derivable from a trade log. Grand Total = sum of years. |
+| Monthly ROI | Net Profit ÷ Average of Capital × 100. The monthly Grand Total and the comparison's `Z ROI%` = sum of monthly ROI. |
+| Yearly ROI | Period's Net Profit ÷ Investments × 100, where Investments = average of that period's monthly capital; period = calendar year or financial year (Apr–Mar, labelled e.g. FY 2024-25). Grand Total averages Investments and ROI across periods. |
+| Benchmarks | Monthly % returns kept on the Benchmarks screen. In the comparison, `Z ROI%` and each benchmark are the SUM of monthly values per calendar or financial year, summed over the same months the owner has ROI. Grand Total = sum of listed periods. |
 | % Investment | Stock cost ÷ total cost of the holdings currently shown × 100 (inside a class tab, the class total). |
 | Asset class | From the SECTORS label, then the stock name: ETF/BEES → ETF; MF/MUTUAL/FUND → Equity MF; DEBT/BOND/SGB/GILT/LIQUID/FD/NCD → Debt; otherwise Equity. Adjust per owner under *Asset class rules* on the Investments tab. |
 
@@ -208,10 +209,12 @@ app.py                      router (st.navigation), owner selector, password gat
 screens/home.py             status per owner, owner management
 screens/trading_input.py    Trading Book: trades (upload / form), monthly capital, benchmarks
 screens/portfolio_input.py  Investment Book: long-term holdings (upload / form)
+screens/benchmarks.py       Benchmarks: shared monthly index returns (grid / upload / reset)
 screens/reports.py          Dashboards: Trading and Investments tabs
 core/parse.py               header matching, type coercion, derived trade columns, templates
 core/portfolio.py           portfolio parsing, holdings, sector allocation
-core/benchmarks.py          annual ROI table, fill Z ROI% from trades, grand total
+core/benchmarks.py          monthly benchmark store, FY/CY period labels, comparison tables
+core/seed/benchmarks_monthly.csv  built-in monthly returns Apr-2022 → Oct-2026
 core/metrics.py             monthly summary, KPIs, capital/brokerage pivots, Excel export
 core/store.py               per-owner persistence (SQLAlchemy; SQLite default, MariaDB optional)
 core/state.py               Streamlit-side cache and write-through

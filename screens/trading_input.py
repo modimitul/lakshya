@@ -6,15 +6,6 @@ import pandas as pd
 import streamlit as st
 
 from core import state
-from core.benchmarks import (
-    BENCHMARK_COLUMNS,
-    Z_COLUMN,
-    computed_z_roi,
-    default_table,
-    fill_z_from_trades,
-    load_benchmarks,
-    normalise_table,
-)
 from core.formatting import inr
 from core.metrics import capital_frame, monthly_summary, months_in
 from core.parse import (
@@ -255,55 +246,7 @@ if missing:
 else:
     st.success(f"Capital entered for all {len(cap)} months (average {inr(float(cap['Capital'].astype(float).mean()), prefix='₹')}).")
 
-# ------------------------------------------------------------ benchmarks ----
 st.divider()
-st.subheader("3. Annual ROI and benchmarks")
-st.caption("Benchmark returns (Nifty, NASDAQ, Gold BeES, …) cannot be read from a trade log, so enter them here "
-           "per year, or upload a sheet whose first column is the year. The Trading dashboard compares them with "
-           f"your **{Z_COLUMN}**.")
-
-bench = state.get_frame("benchmarks")
-if bench is None or bench.empty:
-    bench = default_table()
-else:
-    bench = normalise_table(bench)
-
-b1, b2 = st.columns([1, 1])
-with b1:
-    summary = monthly_summary(trades, state.get_frame("capital"))
-    computed = computed_z_roi(summary)
-    if st.button(f"Fill {Z_COLUMN} from trade data", help="Sum of each year's monthly ROI, for years present in the trades."):
-        bench = fill_z_from_trades(bench, computed)
-        state.put_frame("benchmarks", bench)
-        state.bump("bench_version")
-        st.rerun()
-    if not computed.empty:
-        gaps = computed[computed["months_with_capital"] < computed["months"]]
-        if not gaps.empty:
-            st.caption("Years with months missing capital (their sum is partial): " + ", ".join(str(int(y)) for y in gaps["Year"]))
-with b2:
-    with st.expander("Upload benchmark sheet"):
-        bench_upload = st.file_uploader("Year in the first column; one column per index", type=["xlsx", "xlsm", "csv"], key="bench_upload")
-        if bench_upload is not None:
-            table, errors = load_benchmarks(bench_upload, bench_upload.name)
-            for e in errors:
-                st.error(e)
-            if table is not None and st.button("Use this sheet"):
-                state.put_frame("benchmarks", table)
-                state.bump("bench_version")
-                st.rerun()
-
-edited_bench = st.data_editor(
-    bench, hide_index=True, width="stretch", num_rows="dynamic",
-    key=f"bench_grid_{state.version('bench_version')}",
-    column_config={"Year": st.column_config.NumberColumn(format="%d", step=1),
-                   **{c: st.column_config.NumberColumn(format="%.2f") for c in BENCHMARK_COLUMNS}},
-)
-try:
-    normalised = normalise_table(edited_bench)
-    if not normalised.equals(bench):
-        state.put_frame("benchmarks", normalised)
-except ValueError as exc:
-    st.error(str(exc))
-
+st.caption("Market benchmarks (Nifty, NASDAQ, Gold BeES …) are entered once for everyone on the **Benchmarks** screen.")
+st.page_link("screens/benchmarks.py", label="Go to Benchmarks", icon="📈")
 st.page_link("screens/reports.py", label="Go to Dashboards", icon="📊")

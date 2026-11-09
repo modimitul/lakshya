@@ -114,3 +114,27 @@ def test_asset_class_rules_can_be_saved_from_the_dashboard(tmp_path, monkeypatch
     assert not at.exception, [e.value for e in at.exception]
     assert store.load_json("owner", "meta")["asset_class_overrides"] == {"BANKS": "Equity", "GOLD": "Debt"}
     assert by_label(at.multiselect, "Debt").value == ["GOLD"]
+
+
+def test_benchmarks_screen_renders_and_dashboard_compares(tmp_path, monkeypatch):
+    import pandas as pd
+    from core import store
+    from core.parse import open_workbook, load_trades_workbook
+    from core.metrics import months_in, capital_frame
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
+    store._engines.clear()
+    at = app("screens/benchmarks.py")
+    assert any("55 months" in m.value for m in at.markdown), [m.value for m in at.markdown][:3]
+    # owner with capital → comparison section must appear, in both bases
+    wb = open_workbook(open("/mnt/user-data/uploads/Book1.xlsx", "rb").read(), "Book1.xlsx")
+    r = load_trades_workbook(wb, wb.sheet_names)
+    store.save_users([{"slug": "owner", "name": "Owner"}])
+    store.save_frame("owner", "trades", r.trades)
+    cap = capital_frame(months_in(r.trades)); cap["Capital"] = pd.Series([3000000.0] * len(cap), dtype="Float64")
+    store.save_frame("owner", "capital", cap)
+    at = app("screens/reports.py")
+    assert any(sh.value == "My returns vs benchmarks" for sh in at.subheader)
+    by_label(at.radio, "Year basis").set_value("Financial (Apr–Mar)").run()
+    assert not at.exception, [e.value for e in at.exception]
+    yearly_table = at.dataframe[0].value
+    assert yearly_table["Year"].iloc[0].startswith("FY ")

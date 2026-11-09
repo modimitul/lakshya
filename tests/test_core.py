@@ -155,29 +155,54 @@ def test_portfolio_cost_derived_when_missing():
 
 
 # ------------------------------------------------------------ benchmarks ----
-def test_benchmarks_fill_and_grand_total_is_sum():
-    from core.benchmarks import default_table, computed_z_roi, fill_z_from_trades, with_grand_total
-    summary = pd.DataFrame({
-        "month": pd.to_datetime(["2026-04-01", "2026-05-01", "2025-12-01"]),
-        "Monthly ROI": [2.25, 1.67, 3.0],
-    })
-    computed = computed_z_roi(summary)
-    table = fill_z_from_trades(default_table(2024, 2026), computed)
-    assert table.loc[table["Year"] == 2026, "Z ROI%"].iat[0] == pytest.approx(3.92)
-    assert table.loc[table["Year"] == 2025, "Z ROI%"].iat[0] == pytest.approx(3.0)
-    total = with_grand_total(table)
-    assert total.iloc[-1]["Year"] == "Grand Total"
-    assert total.iloc[-1]["Z ROI%"] == pytest.approx(6.92)
+def test_seed_reproduces_the_annual_sheet():
+    from core.benchmarks import seed_frame, comparison_table, period_label
+    b = seed_frame()
+    assert len(b) == 55 and b["month"].min() == pd.Timestamp("2022-04-01")
+    yearly = b.assign(y=b["month"].dt.year).groupby("y")["Nifty ROI"].sum().round(2)
+    assert yearly.loc[2023] == 19.06 and yearly.loc[2024] == 8.99 and yearly.loc[2026] == -11.25
+    gold = b.assign(y=b["month"].dt.year).groupby("y")["GOLD BEES"].sum().round(2)
+    assert gold.loc[2025] == 55.90
+    assert period_label(pd.Series(pd.to_datetime(["2023-03-01", "2023-04-01"])), "financial").tolist() == ["FY 2022-23", "FY 2023-24"]
 
 
-def test_benchmarks_upload_accepts_row_labels_header_and_drops_total():
+def test_comparison_table_sums_per_period_and_totals():
+    from core.benchmarks import seed_frame, comparison_table
+    summary = pd.DataFrame({"month": pd.to_datetime(["2026-03-01", "2026-04-01", "2026-05-01"]), "Monthly ROI": [1.0, 2.25, 1.67]})
+    cal = comparison_table(summary, seed_frame(), "calendar", ["Nifty ROI"]).set_index("Period")
+    assert cal.loc["2026", "Z ROI%"] == pytest.approx(4.92)
+    assert cal.loc["2026", "Nifty ROI"] == pytest.approx(-11.31 + 7.46 - 1.87)   # Mar+Apr+May 2026 only, like for like
+    assert list(cal.index) == ["2026", "Grand Total"]
+    fin = comparison_table(summary, seed_frame(), "financial", ["Nifty ROI"]).set_index("Period")
+    assert fin.loc["FY 2025-26", "Z ROI%"] == pytest.approx(1.0)
+    assert fin.loc["FY 2026-27", "Z ROI%"] == pytest.approx(3.92)
+    assert fin.loc["Grand Total", "Z ROI%"] == pytest.approx(4.92)
+
+
+def test_monthly_benchmark_upload_accepts_old_headers_and_merges():
     import io
-    from core.benchmarks import load_benchmarks
-    raw = pd.DataFrame({"Row Labels": [2018, 2019, "Grand Total"], "Z ROI%": [3.97, 18.86, 22.83], "Nifty ROI%": [-0.13, 11.98, 11.85]})
+    from core.benchmarks import load_monthly_file, merge_monthly, seed_frame
+    raw = pd.DataFrame({"Row Labels": ["Jan-22", "Apr-22", "Grand Total"], "Nifty ROI%": [-0.08, -9.99, 0], "Gold": [1.1, 2.2, 0]})
     buf = io.BytesIO(); raw.to_csv(buf, index=False); buf.seek(0)
-    table, errors = load_benchmarks(buf, "bench.csv")
-    assert not errors and table["Year"].tolist() == [2018, 2019]
-    assert table["Nifty ROI%"].tolist() == [-0.13, 11.98]
+    incoming, errors = load_monthly_file(buf, "b.csv")
+    assert not errors and list(incoming.columns) == ["month", "Nifty ROI", "GOLD BEES"]
+    merged = merge_monthly(seed_frame(), incoming).set_index("month")
+    assert float(merged.loc["2022-01-01", "Nifty ROI"]) == -0.08          # new month added
+    assert float(merged.loc["2022-04-01", "Nifty ROI"]) == -9.99          # incoming overwrites
+    assert float(merged.loc["2022-04-01", "Nifty BEES ROI"]) == -1.82     # untouched column kept
+
+
+def test_yearly_summary_financial_year_basis():
+    from core.metrics import yearly_summary
+    summary = pd.DataFrame({
+        "month": pd.to_datetime(["2026-03-01", "2026-04-01"]),
+        "Average of Capital": pd.array([1000000, 2000000], dtype="Float64"),
+        "Net Profit": [100000.0, 50000.0], "Brokerage": [0.0, 0.0], "Trades": [1, 1],
+    })
+    fin = yearly_summary(summary, "financial")
+    assert fin["Year"].tolist() == ["FY 2025-26", "FY 2026-27"]
+    assert fin["Yearly ROI"].round(1).tolist() == [10.0, 2.5]
+    assert yearly_summary(summary, "calendar")["Year"].tolist() == [2026]
 
 
 # ----------------------------------------------------------------- store ----
