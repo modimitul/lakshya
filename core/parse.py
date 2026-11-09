@@ -118,26 +118,153 @@ def excel_engine() -> str:
         return "openpyxl"
 
 
-def read_workbook(file: IO[bytes] | str, filename: str) -> dict[str, pd.DataFrame]:
-    """Read every sheet in ONE pass: {sheet name: DataFrame}. CSV gives a single sheet."""
-    try:
-        file.seek(0)
-    except AttributeError:
-        pass
-    lower = filename.lower()
-    if lower.endswith(".csv"):
-        return {"CSV": pd.read_csv(file)}
-    if not lower.endswith(EXCEL_EXTENSIONS):
-        raise ValueError(f"Unsupported file type: {filename}. Upload .xlsx, .xlsm, .xls or .csv.")
-    engine = excel_engine()
-    if lower.endswith(".xls") and engine != "calamine":
+def _blank_cell(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str):
+        t = v.strip()
+        return not t or t.startswith("#")          # '' or Excel error text such as #DIV/0!
+    if isinstance(v, (int, float)):
+        return v == 0                               # formulas on empty rows evaluate to 0
+    return False
+
+
+def _blank_row(row) -> bool:
+    return all(_blank_cell(v) for v in row)
+
+
+def _header_row_index(rows: list[list]) -> int:
+    """First row with at least 3 text cells is the header; title rows above it are skipped."""
+    for i, row in enumerate(rows[:20]):
+        if sum(isinstance(v, str) and v.strip() != "" for v in row) >= 3:
+            return i
+    return 0
+
+
+def _rows_to_frame(header: list, body: list[list]) -> pd.DataFrame:
+    width = len(header)
+    cols = [str(h).strip() if h is not None and str(h).strip() else f"col_{i}" for i, h in enumerate(header)]
+    def norm(v):
+        return None if (isinstance(v, str) and not v.strip()) else v  # '' behaves like an empty cell
+
+    fixed = [[norm(v) for v in r[:width]] + [None] * (width - len(r)) for r in body]
+    return pd.DataFrame(fixed, columns=cols)
+
+
+class Workbook:
+    """Low-memory access to an uploaded workbook.
+
+    Holds only the file bytes. Sheet names and header rows are read cheaply;
+    `frame(sheet)` streams ONE sheet, dropping the formatted-but-empty rows that
+    broker exports carry by the tens of thousands, before any DataFrame exists.
+    """
+
+    def __init__(self, data: bytes, filename: str):
+        self.data = data
+        self.filename = filename
+        lower = filename.lower()
+        self.is_csv = lower.endswith(".csv")
+        if not self.is_csv and not lower.endswith(EXCEL_EXTENSIONS):
+            raise ValueError(f"Unsupported file type: {filename}. Upload .xlsx, .xlsm, .xls or .csv.")
+        self.engine = "csv" if self.is_csv else excel_engine()
+        if self.engine == "openpyxl" and lower.endswith(".xls"):
+            raise ValueError("Legacy .xls needs the 'python-calamine' package; or save the file as .xlsx.")
+        self._book = None
+        self.sheet_names: list[str] = self._load_sheet_names()
+
+    # -- backends ---------------------------------------------------------
+    def _open(self):
+        if self._book is None:
+            import io
+            if self.engine == "calamine":
+                from python_calamine import CalamineWorkbook
+                self._book = CalamineWorkbook.from_filelike(io.BytesIO(self.data))
+            elif self.engine == "openpyxl":
+                import openpyxl
+                self._book = openpyxl.load_workbook(io.BytesIO(self.data), read_only=True, data_only=True)
+        return self._book
+
+    def _load_sheet_names(self) -> list[str]:
+        if self.is_csv:
+            return ["CSV"]
+        book = self._open()
+        return list(book.sheet_names) if self.engine == "calamine" else list(book.sheetnames)
+
+    def _iter_rows(self, sheet: str):
+        book = self._open()
+        if self.engine == "calamine":
+            yield from book.get_sheet_by_name(sheet).iter_rows()
+        else:
+            yield from book[sheet].iter_rows(values_only=True)
+
+    # -- public -----------------------------------------------------------
+    def headers(self, sheet: str) -> list[str]:
+        if self.is_csv:
+            import io
+            return list(pd.read_csv(io.BytesIO(self.data), nrows=0).columns)
+        first_rows = []
+        for row in self._iter_rows(sheet):
+            first_rows.append(list(row))
+            if len(first_rows) >= 20:
+                break
+        if not first_rows:
+            return []
+        idx = _header_row_index(first_rows)
+        return [str(h).strip() for h in first_rows[idx] if h is not None and str(h).strip()]
+
+    def frame(self, sheet: str) -> pd.DataFrame:
+        """One sheet as a DataFrame with blank rows already removed."""
+        if self.is_csv:
+            import io
+            df = pd.read_csv(io.BytesIO(self.data))
+            return df.dropna(how="all")
+        header, body, pending = None, [], []
+        for row in self._iter_rows(sheet):
+            row = list(row)
+            if header is None:
+                pending.append(row)
+                if len(pending) >= 20 or (sum(isinstance(v, str) and v.strip() != "" for v in row) >= 3):
+                    idx = _header_row_index(pending)
+                    header = pending[idx]
+                    body.extend(r for r in pending[idx + 1:] if not _blank_row(r))
+                    pending = []
+                continue
+            if not _blank_row(row):
+                body.append(row)
+        if header is None:
+            if not pending:
+                return pd.DataFrame()
+            header = pending[0]
+            body = [r for r in pending[1:] if not _blank_row(r)]
+        return _rows_to_frame(header, body)
+
+
+def open_workbook(file: IO[bytes] | bytes, filename: str) -> Workbook:
+    """Wrap uploaded bytes (or a file object) in a Workbook."""
+    if isinstance(file, (bytes, bytearray)):
+        data = bytes(file)
+    else:
         try:
-            import xlrd  # noqa: F401
-            engine = "xlrd"
-        except ImportError as exc:
-            raise ValueError("Legacy .xls needs 'python-calamine' or 'xlrd'; or save the file as .xlsx.") from exc
-    frames = pd.read_excel(file, sheet_name=None, engine=engine)
-    return {str(name): frame for name, frame in frames.items()}
+            file.seek(0)
+        except AttributeError:
+            pass
+        data = file.read()
+    return Workbook(data, filename)
+
+
+def read_workbook(file: IO[bytes] | str, filename: str) -> dict[str, pd.DataFrame]:
+    """Every sheet as {name: DataFrame} (blank rows dropped). Convenience for small files and tests."""
+    if isinstance(file, str):
+        with open(file, "rb") as fh:
+            wb = open_workbook(fh, filename)
+    else:
+        wb = open_workbook(file, filename)
+    return {name: wb.frame(name) for name in wb.sheet_names}
+
+
+def looks_like_trade_header(headers: list[str]) -> bool:
+    mapped = set(map_columns(headers).values())
+    return "stock" in mapped and bool(mapped & {"gross_profit", "pl", "sell", "sale_value"})
 
 
 def looks_like_trade_frame(frame: pd.DataFrame) -> bool:
@@ -420,6 +547,46 @@ def load_trades_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) -> Pa
         result.notes.append(f"{label}: {len(part.trades):,} trades" + (f", {len(part.excluded)} excluded" if len(part.excluded) else ""))
         for w in part.warnings:
             result.warnings.append(f"{label}: {w}")
+    if not parts:
+        result.errors.append("None of the selected sheets could be read as a trade log.")
+        return result
+    result.trades = pd.concat(parts, ignore_index=True)
+    result.excluded = pd.concat(excluded, ignore_index=True) if excluded else pd.DataFrame()
+    result.mapping = mapping
+    return result
+
+
+def load_trades_workbook(wb: Workbook, sheets: list[str]) -> ParseResult:
+    """Import selected sheets one at a time (low memory); same output as load_trades_frames."""
+    import gc
+
+    parts, excluded, mapping = [], [], {}
+    result = ParseResult(trades=pd.DataFrame())
+    for sheet in sheets:
+        label = f"Sheet '{sheet}'"
+        try:
+            raw = wb.frame(str(sheet))
+        except Exception as exc:
+            result.warnings.append(f"{label}: could not be read ({exc}).")
+            continue
+        if raw.empty:
+            result.warnings.append(f"{label}: empty.")
+            continue
+        part = clean(raw)
+        del raw
+        if part.errors:
+            result.warnings.append(f"{label}: " + " ".join(part.errors))
+            continue
+        part.trades["source_sheet"] = str(sheet)
+        parts.append(part.trades)
+        if not part.excluded.empty:
+            part.excluded["source_sheet"] = str(sheet)
+            excluded.append(part.excluded)
+        mapping.update(part.mapping)
+        result.notes.append(f"{label}: {len(part.trades):,} trades" + (f", {len(part.excluded)} excluded" if len(part.excluded) else ""))
+        for w in part.warnings:
+            result.warnings.append(f"{label}: {w}")
+        gc.collect()
     if not parts:
         result.errors.append("None of the selected sheets could be read as a trade log.")
         return result

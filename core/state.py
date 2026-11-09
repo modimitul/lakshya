@@ -97,17 +97,18 @@ def version(key: str) -> int:
 
 
 def cached_workbook(upload, key: str):
-    """Read an uploaded workbook once per upload and keep the frames in the session.
+    """Wrap an upload in a low-memory Workbook once per upload and keep it in the session.
 
-    Returns {sheet: DataFrame} or None (with the error shown) if it cannot be read.
+    Only the file bytes are held; sheets are streamed on demand. Returns None (with
+    the error shown) if the file cannot be opened.
     """
-    from .parse import read_workbook
+    from .parse import open_workbook
 
     fingerprint = f"{upload.name}:{upload.size}"
     if st.session_state.get(f"{key}_fp") != fingerprint:
         try:
-            with st.spinner(f"Reading {upload.name} …"):
-                st.session_state[key] = read_workbook(upload, upload.name)
+            with st.spinner(f"Opening {upload.name} …"):
+                st.session_state[key] = open_workbook(upload.getvalue(), upload.name)
         except Exception as exc:
             st.error(f"Could not read the file: {exc}")
             st.session_state.pop(key, None)

@@ -24,7 +24,7 @@ def login_gate() -> None:
     st.caption(APP_TAGLINE)
     _, box, _ = st.columns([1, 1.2, 1])
     with box, st.form("login", border=True):
-        username = st.text_input("Username", placeholder="Your name, e.g. Priya",
+        username = st.text_input("Username", placeholder="Your name",
                                  help="New names create a new portfolio owner; existing names open theirs.")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in", type="primary", width="stretch")

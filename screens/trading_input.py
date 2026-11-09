@@ -22,8 +22,8 @@ from core.parse import (
     ParseResult,
     dedupe_trades,
     load_capital_frame,
-    load_trades_frames,
-    looks_like_trade_frame,
+    load_trades_workbook,
+    looks_like_trade_header,
     template_bytes,
     trade_from_form,
 )
@@ -68,19 +68,19 @@ if mode == "Upload a file":
             help="Headers are matched by name, so extra columns are fine. Needed per tab: Month or Buy Date, "
                  "and Gross Profit (or Profit/Loss, or Qty + Buy + Sell).",
         )
-    frames = state.cached_workbook(upload, "trade_wb") if upload is not None else None
-    if frames:
-        sheets = list(frames)
+    wb = state.cached_workbook(upload, "trade_wb") if upload is not None else None
+    if wb:
+        sheets = wb.sheet_names
         chosen = sheets
         if len(sheets) > 1:
-            detected = [sh for sh in sheets if looks_like_trade_frame(frames[sh])]
+            detected = [sh for sh in sheets if looks_like_trade_header(wb.headers(sh))]
             chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets,
                                     help="Tabs that look like trade logs are pre-selected. Untick summary or pivot tabs.")
         how = st.radio("How to import", ["Replace this owner's trades", "Add to existing trades (duplicates skipped)"],
                        horizontal=True, index=0 if trades is None or trades.empty else 1)
         if st.button("Import", type="primary", disabled=not chosen):
             with st.spinner("Importing …"):
-                result = load_trades_frames(frames, chosen)
+                result = load_trades_workbook(wb, chosen)
             show_messages(result)
             if result.ok:
                 incoming = result.trades
@@ -209,13 +209,13 @@ if "capital" in trades:
 with st.expander("Upload a monthly capital sheet (Month + Capital columns; the 'Average of Capital' pivot works as-is)",
                  expanded=st.session_state.get("capital_upload") is not None):
     cap_upload = st.file_uploader("Capital sheet", type=["xlsx", "xlsm", "xls", "csv"], key="capital_upload")
-    cap_frames = state.cached_workbook(cap_upload, "capital_wb") if cap_upload is not None else None
-    if cap_frames:
-        cap_sheets = list(cap_frames)
+    cap_wb = state.cached_workbook(cap_upload, "capital_wb") if cap_upload is not None else None
+    if cap_wb:
+        cap_sheets = cap_wb.sheet_names
         cap_sheet = cap_sheets[0]
         if len(cap_sheets) > 1:
             cap_sheet = st.selectbox("Tab with the capital table", cap_sheets, key="capital_sheet")
-        parsed, cap_errors = load_capital_frame(cap_frames[cap_sheet])
+        parsed, cap_errors = load_capital_frame(cap_wb.frame(cap_sheet))
         for e in cap_errors:
             st.error(e)
         if parsed is not None:

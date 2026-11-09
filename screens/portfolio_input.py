@@ -12,8 +12,8 @@ from core.portfolio import (
     PortfolioResult,
     dedupe_entries,
     entry_from_form,
-    load_portfolio_frames,
-    looks_like_portfolio_frame,
+    load_portfolio_workbook,
+    looks_like_portfolio_header,
     portfolio_template_bytes,
 )
 
@@ -56,18 +56,18 @@ if mode == "Upload a file":
             type=["xlsx", "xlsm", "xls", "csv"], key="portfolio_upload",
             help="Columns: MONTH, SECTORS, STOCK, QTY, BUY, COST, GIFT AMOUNT. Months may be dates or text like Jul-23.",
         )
-    frames = state.cached_workbook(upload, "portfolio_wb") if upload is not None else None
-    if frames:
-        sheets = list(frames)
+    wb = state.cached_workbook(upload, "portfolio_wb") if upload is not None else None
+    if wb:
+        sheets = wb.sheet_names
         chosen = sheets
         if len(sheets) > 1:
-            detected = [sh for sh in sheets if looks_like_portfolio_frame(frames[sh])]
+            detected = [sh for sh in sheets if looks_like_portfolio_header(wb.headers(sh))]
             chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets, key="portfolio_tabs")
         how = st.radio("How to import", ["Replace this owner's holdings", "Add to existing holdings (duplicates skipped)"],
                        horizontal=True, index=0 if entries is None or entries.empty else 1, key="portfolio_how")
         if st.button("Import", type="primary", disabled=not chosen, key="portfolio_import"):
             with st.spinner("Importing …"):
-                result = load_portfolio_frames(frames, chosen)
+                result = load_portfolio_workbook(wb, chosen)
             show_messages(result)
             if result.ok:
                 incoming = result.entries

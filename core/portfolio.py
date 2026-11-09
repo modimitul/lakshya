@@ -165,6 +165,47 @@ def portfolio_template_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def looks_like_portfolio_header(headers: list[str]) -> bool:
+    mapped = set(map_columns(headers, PORTFOLIO_ALIASES).values())
+    return "stock" in mapped and bool(mapped & {"cost", "buy", "qty"})
+
+
+def load_portfolio_workbook(wb, sheets: list[str]) -> PortfolioResult:
+    """Import selected sheets one at a time (low memory)."""
+    import gc
+
+    parts, mapping = [], {}
+    result = PortfolioResult(entries=pd.DataFrame())
+    for sheet in sheets:
+        label = f"Sheet '{sheet}'"
+        try:
+            raw = wb.frame(str(sheet))
+        except Exception as exc:
+            result.warnings.append(f"{label}: could not be read ({exc}).")
+            continue
+        if raw.empty:
+            result.warnings.append(f"{label}: empty.")
+            continue
+        part = clean_portfolio(raw)
+        del raw
+        if part.errors:
+            result.warnings.append(f"{label}: " + " ".join(part.errors))
+            continue
+        part.entries["source_sheet"] = str(sheet)
+        parts.append(part.entries)
+        mapping.update(part.mapping)
+        result.notes.append(f"{label}: {len(part.entries):,} holdings")
+        for w in part.warnings:
+            result.warnings.append(f"{label}: {w}")
+        gc.collect()
+    if not parts:
+        result.errors.append("None of the selected sheets could be read as a portfolio.")
+        return result
+    result.entries = pd.concat(parts, ignore_index=True)
+    result.mapping = mapping
+    return result
+
+
 def looks_like_portfolio_frame(frame: pd.DataFrame) -> bool:
     mapped = set(map_columns(frame.columns, PORTFOLIO_ALIASES).values())
     return "stock" in mapped and bool(mapped & {"cost", "buy", "qty"})

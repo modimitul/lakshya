@@ -242,3 +242,61 @@ def test_capital_sheet_from_pivot(tmp_path):
     assert not errors
     assert cap["month"].dt.strftime("%b-%y").tolist() == ["Mar-25", "Apr-26"]
     assert cap["Capital"].tolist() == [1000000, 2000000]
+
+
+# -------------------------------------------------------------- sql store ----
+def test_legacy_csv_is_imported_once(tmp_path, monkeypatch):
+    import json
+    from core import store
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
+    store._engines.clear()
+    # files exactly as the previous (CSV) version wrote them
+    (tmp_path / "jyoti").mkdir()
+    pd.DataFrame({"month": ["2026-04-01"], "stock": ["TCS"], "gross_profit": [83353.0]}).to_csv(tmp_path / "jyoti" / "trades.csv", index=False)
+    pd.DataFrame({"month": ["2026-04-01"], "Month": ["Apr-26"], "Capital": [3700000]}).to_csv(tmp_path / "jyoti" / "capital.csv", index=False)
+    (tmp_path / "jyoti" / "meta.json").write_text(json.dumps({"trades_source": "Book1.xlsx"}))
+    (tmp_path / "users.json").write_text(json.dumps([{"slug": "jyoti", "name": "Jyoti"}]))
+
+    assert store.load_users() == [{"slug": "jyoti", "name": "Jyoti"}]
+    trades = store.load_frame("jyoti", "trades")
+    assert trades["month"].iloc[0] == pd.Timestamp("2026-04-01") and trades["gross_profit"].iloc[0] == 83353.0
+    assert float(store.load_frame("jyoti", "capital")["Capital"].iloc[0]) == 3700000
+    assert store.load_json("jyoti", "meta")["trades_source"] == "Book1.xlsx"
+    assert (tmp_path / "jyoti.imported").exists() and not (tmp_path / "jyoti").exists()
+    assert (tmp_path / "lakshya.db").exists()
+    # a second engine start must not re-import or duplicate
+    store._engines.clear()
+    assert len(store.load_users()) == 1 and len(store.load_frame("jyoti", "trades")) == 1
+
+
+def test_concurrent_saves_by_two_owners_do_not_clash(tmp_path, monkeypatch):
+    import threading
+    from core import store
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
+    store._engines.clear()
+    store.save_users([{"slug": "a", "name": "A"}, {"slug": "b", "name": "B"}])
+    errors = []
+
+    def writer(slug, value):
+        try:
+            for i in range(20):
+                store.save_frame(slug, "trades", pd.DataFrame({"month": pd.to_datetime(["2026-04-01"]), "stock": [slug], "gross_profit": [value + i]}))
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=("a", 1000)), threading.Thread(target=writer, args=("b", 2000))]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors
+    assert store.load_frame("a", "trades")["gross_profit"].iloc[0] == 1019
+    assert store.load_frame("b", "trades")["gross_profit"].iloc[0] == 2019
+
+
+def test_schema_grows_when_a_frame_adds_a_column(tmp_path, monkeypatch):
+    from core import store
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
+    store._engines.clear()
+    store.save_frame("x", "portfolio", pd.DataFrame({"month": pd.to_datetime(["2023-07-01"]), "stock": ["SRF"], "cost": [108959.0]}))
+    store.save_frame("y", "portfolio", pd.DataFrame({"month": pd.to_datetime(["2022-01-01"]), "stock": ["DMART"], "cost": [366044.0], "gift": [366044.0]}))
+    assert store.load_frame("y", "portfolio")["gift"].iloc[0] == 366044.0
+    assert store.load_frame("x", "portfolio")["cost"].iloc[0] == 108959.0  # x is untouched by y's new column

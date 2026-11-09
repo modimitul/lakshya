@@ -13,9 +13,10 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Dashboards → Trading | KPIs, monthly table (capital, net profit, brokerage, ROI, win rate), capital and brokerage pivots with Grand Total, annual ROI vs benchmarks, breakdown by stock/strategy, trade log, Excel download |
 | Dashboards → Investments | Year / sector / month filters, holdings by stock with % Investment, sector allocation, gifts, Excel download |
 
-A **Portfolio owner** selector in the sidebar switches between owners (two by
-default; rename or add more on Home). Each owner's data is saved on the server
-under `data/<owner>/` as CSV, so it survives refreshes and restarts.
+A **Portfolio owner** selector in the sidebar switches between owners. Each
+owner's data is saved in a SQL database on the server (SQLite file
+`data/lakshya.db` by default), so it survives refreshes and restarts and two
+owners can save at the same moment safely.
 
 ## How the numbers work
 
@@ -46,8 +47,32 @@ separation, ask for per-user passwords; it is a small change.
 Without `APP_PASSWORD` (for example when running locally) there is no sign-in
 screen and a single owner called "Owner" is used.
 
-Owner folders live under `data/<owner>/`. To remove an owner entirely, delete
-that folder (and the entry in `data/users.json`) on the server.
+## Storage
+
+All data lives in one SQL database. By default that is a SQLite file,
+`data/lakshya.db` (set `LAKSHYA_DATA_DIR` to move the folder). Tables:
+`owners`, `meta`, `trades`, `excluded`, `capital`, `benchmarks`, `portfolio`,
+each keyed by owner. Writes are transactional; a save replaces that owner's
+rows atomically.
+
+**Backup:** copy `data/lakshya.db` (plus `lakshya.db-wal` if present), or for a
+consistent copy while the app is running:
+`sqlite3 data/lakshya.db ".backup /home/ubuntu/lakshya-backup.db"`
+(`sudo apt install sqlite3` once). A Lightsail snapshot also covers it.
+
+**MariaDB / MySQL instead of SQLite:** create an empty database, then set
+`LAKSHYA_DB_URL=mysql+pymysql://user:password@host/lakshya` in the service
+environment and `pip install pymysql`. Tables are created on first start. No
+code change.
+
+**Upgrading from the earlier CSV version:** on first start the app imports
+`data/<owner>/*.csv` and `data/users.json` into the database automatically and
+renames the old folders to `<owner>.imported`. Delete those once you have
+checked the dashboards.
+
+**Removing an owner:** `sqlite3 data/lakshya.db "DELETE FROM owners WHERE slug='name'"`
+plus the same `DELETE FROM <table> WHERE owner='name'` for the data tables, or
+ask for a Remove button if you need it often.
 
 ## Importing a workbook with one tab per year
 
@@ -57,10 +82,16 @@ pre-selected; untick pivot or summary tabs. Choose **Replace** (first load) or
 skipped, so re-importing a tab is safe. Each row remembers its tab in
 `source_sheet`. Investment Book works the same way for holdings.
 
-Large workbooks: the file is read once per session with the calamine engine
-(openpyxl is the fallback) and kept in memory while you pick tabs and import, so
-a 5 MB export with many formatted-but-empty rows takes seconds, not minutes.
-While the server is working the page fades and a spinner shows; that is normal.
+Large workbooks: only the file bytes are kept in memory; tab detection reads
+header rows, and import streams one tab at a time, dropping the tens of
+thousands of formatted-but-empty rows that broker exports carry before any
+table is built (calamine engine; openpyxl fallback). Peak memory for a 9-tab
+export is a few MB, so the $5 (512 MB) VM copes. While the server is working
+the page fades and a spinner shows; that is normal.
+
+If the service ever dies on upload, check for an out-of-memory kill with
+`sudo dmesg | grep -i "out of memory"` and `journalctl -u lakshya -n 50`; the
+fix is the larger $7 plan (1 GB).
 
 Monthly capital can be uploaded under *2. Monthly capital*: any sheet with a
 Month (or "Row Labels") column and a Capital (or "Average of Capital") column;
@@ -146,7 +177,7 @@ Everything is done in the AWS Console; no command-line tools on your laptop.
    Your URL becomes `https://lakshya.duckdns.org`.
 
 **Updating later:** push (or re-upload) to GitHub, or `scp` a new zip, then SSH
-in and re-run the same command; owner data under `data/` is kept. **Logs:**
+in and re-run the same command; the database under `data/` is kept. **Logs:**
 `journalctl -u lakshya -f`. **Restart:** `sudo systemctl restart lakshya`.
 
 ### Option C — Google Cloud Run (pay per use, scales to zero)
@@ -178,7 +209,7 @@ core/parse.py               header matching, type coercion, derived trade column
 core/portfolio.py           portfolio parsing, holdings, sector allocation
 core/benchmarks.py          annual ROI table, fill Z ROI% from trades, grand total
 core/metrics.py             monthly summary, KPIs, capital/brokerage pivots, Excel export
-core/store.py               per-owner persistence (CSV/JSON under data/)
+core/store.py               per-owner persistence (SQLAlchemy; SQLite default, MariaDB optional)
 core/state.py               Streamlit-side cache and write-through
 core/formatting.py          Indian number formatting (37,00,000)
 tests/test_core.py          unit tests (pytest -q)
@@ -194,8 +225,8 @@ Change `APP_NAME` in `core/__init__.py`; every screen reads it from there.
 
 ## Data handling
 
-Uploaded files are parsed and the cleaned rows are saved per owner under
-`data/` on the host (set `LAKSHYA_DATA_DIR` to move it). Nothing is sent anywhere
-other than the host you deploy to. On Streamlit Community Cloud and Cloud Run the
-disk is not persistent, so saved data disappears on redeploy; use the Lightsail
-VM (or mount persistent storage) if owners must keep their data between visits.
+Uploaded files are parsed in memory and only the cleaned rows are saved, into
+the database described under Storage. Nothing is sent anywhere other than the
+host you deploy to. On Streamlit Community Cloud and Cloud Run the disk is not
+persistent, so a SQLite file disappears on redeploy; there, point
+`LAKSHYA_DB_URL` at a managed database or use the Lightsail VM.
