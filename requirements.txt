@@ -1,0 +1,6 @@
+# Tested with Python 3.12 on 2026-11-08
+streamlit==1.67.0
+pandas==3.0.6
+openpyxl==3.1.5
+plotly==7.1.0
+xlrd>=2.0.1   # only needed for legacy .xls uploads

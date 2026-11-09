@@ -1,0 +1,325 @@
+"""Read a trade log (xlsx / csv upload, or manual entry) into a canonical DataFrame.
+
+Canonical columns (all optional unless noted):
+    buy_date, month, stock, strike, type, qty, buy, cost_value, sale_date, sell,
+    sale_value, pl, brokerage, gross_profit, margin, lot, inv_amount, roi, capital
+
+Only `gross_profit` (or the columns it can be derived from) and a date to group
+by (`month` or `buy_date`) are required to produce the monthly report.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import IO
+
+import pandas as pd
+
+# canonical name -> accepted header spellings, compared after normalise_header()
+COLUMN_ALIASES: dict[str, list[str]] = {
+    "buy_date": ["buy date", "entry date", "open date", "trade date", "date"],
+    "month": ["month", "expiry month", "period"],
+    "stock": ["stock", "symbol", "scrip", "instrument", "underlying"],
+    "strike": ["strike price", "strike"],
+    "type": ["type", "strategy", "trade type"],
+    "qty": ["qty", "quantity"],
+    "buy": ["buy", "buy price", "entry price", "buy avg"],
+    "cost_value": ["cost value", "buy value"],
+    "sale_date": ["sale date", "sell date", "exit date", "close date"],
+    "sell": ["sell", "sell price", "exit price", "sell avg"],
+    "sale_value": ["sale value", "sell value"],
+    "pl": ["profit /loss", "profit/loss", "profit / loss", "p&l", "pnl", "p/l", "profit"],
+    "brokerage": ["brokerage & other charges", "brokerage", "charges", "brokerage and other charges"],
+    "gross_profit": ["gross profit", "net p&l", "realised p&l", "realized p&l", "net profit"],
+    "margin": ["margin", "margin per lot"],
+    "lot": ["lot", "lots"],
+    "inv_amount": ["inv amount", "investment", "capital deployed", "margin used"],
+    "roi": ["roi", "roi %", "return %"],
+    "capital": ["capital", "total capital", "account capital"],
+}
+
+NUMERIC_COLUMNS = [
+    "strike", "qty", "buy", "cost_value", "sell", "sale_value", "pl",
+    "brokerage", "gross_profit", "margin", "lot", "inv_amount", "roi", "capital",
+]
+DATE_COLUMNS = ["buy_date", "month", "sale_date"]
+
+# Columns shown on the manual-entry grid: canonical -> label the user sees.
+MANUAL_COLUMNS: dict[str, str] = {
+    "buy_date": "Buy Date",
+    "stock": "Stock",
+    "strike": "Strike Price",
+    "type": "Type",
+    "qty": "Qty",
+    "buy": "Buy",
+    "sale_date": "Sale Date",
+    "sell": "Sell",
+    "brokerage": "Brokerage & Other Charges",
+    "margin": "Margin",
+    "lot": "Lot",
+}
+
+COMMON_TRADE_TYPES = [
+    "Naked Put Sell", "Naked Call Sell", "Short Strangle", "Short Straddle",
+    "Bull Put Spread", "FUTURE Long", "Naked Put Buy", "Equity",
+]
+
+EXCEL_EXTENSIONS = (".xlsx", ".xlsm", ".xls")
+
+
+@dataclass
+class ParseResult:
+    trades: pd.DataFrame
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    mapping: dict[str, str] = field(default_factory=dict)  # original header -> canonical
+    excluded: pd.DataFrame = field(default_factory=pd.DataFrame)  # rows left out of monthly totals
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors and not self.trades.empty
+
+
+def normalise_header(name) -> str:
+    """Lower-case, collapse whitespace/newlines, strip trailing punctuation."""
+    text = re.sub(r"\s+", " ", str(name)).strip().lower()
+    return text.rstrip(":")
+
+
+def coerce_numeric(series: pd.Series) -> pd.Series:
+    """to_numeric that also accepts Indian-formatted text such as '1,08,959' or '₹ 2,500'."""
+    if series.dtype == object or pd.api.types.is_string_dtype(series):
+        series = series.astype("string").str.replace(r"[₹,\s]", "", regex=True).replace("", pd.NA)
+    return pd.to_numeric(series, errors="coerce")
+
+
+def map_columns(columns, aliases: dict[str, list[str]] | None = None) -> dict[str, str]:
+    """Return {original header: canonical name} for every header we recognise."""
+    aliases = aliases or COLUMN_ALIASES
+    lookup = {alias: canon for canon, aliases_ in aliases.items() for alias in aliases_}
+    mapping: dict[str, str] = {}
+    taken: set[str] = set()
+    for col in columns:
+        canon = lookup.get(normalise_header(col))
+        if canon and canon not in taken:  # first match wins; ignore duplicate headers
+            mapping[col] = canon
+            taken.add(canon)
+    return mapping
+
+
+def list_sheets(file: IO[bytes] | str) -> list[str]:
+    """Sheet names of an Excel upload (empty list for CSV)."""
+    try:
+        file.seek(0)
+    except AttributeError:
+        pass
+    return pd.ExcelFile(file).sheet_names
+
+
+def read_any(file: IO[bytes] | str, filename: str, sheet_name=0) -> pd.DataFrame:
+    """Read csv/xlsx/xlsm/xls. Excel formulas come back as their cached values."""
+    try:
+        file.seek(0)
+    except AttributeError:
+        pass
+    lower = filename.lower()
+    if lower.endswith(".csv"):
+        return pd.read_csv(file)
+    if lower.endswith(".xls"):
+        try:
+            return pd.read_excel(file, sheet_name=sheet_name, engine="xlrd")
+        except ImportError as exc:  # pragma: no cover - depends on environment
+            raise ValueError("Legacy .xls needs the 'xlrd' package; save the file as .xlsx instead.") from exc
+    if lower.endswith(EXCEL_EXTENSIONS[:2]):
+        return pd.read_excel(file, sheet_name=sheet_name, engine="openpyxl")
+    raise ValueError(f"Unsupported file type: {filename}. Upload .xlsx, .xlsm, .xls or .csv.")
+
+
+MONTH_FORMATS = ("%b-%y", "%b-%Y", "%b %y", "%b %Y", "%B-%y", "%B %Y", "%m/%Y", "%m-%Y", "%Y-%m",
+                 "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%y", "%d-%b-%Y")
+
+
+def _to_month_start(series: pd.Series) -> pd.Series:
+    """Coerce dates or labels like 'Apr-26' / 'Jul 2023' to the first day of that month."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        parsed = pd.to_datetime(series, errors="coerce")
+    else:
+        text = series.astype("string").str.strip()
+        parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+        # Explicit formats first: the generic parser reads 'Jul-23' as the 23rd of July.
+        for fmt in MONTH_FORMATS:
+            if parsed.isna().any():
+                parsed = parsed.fillna(pd.to_datetime(text.where(parsed.isna()), format=fmt, errors="coerce"))
+        if parsed.isna().any():  # real datetime objects mixed into an object column, etc.
+            rest = series.where(parsed.isna())
+            with_dt = rest[rest.map(lambda v: hasattr(v, "year"))]
+            if not with_dt.empty:
+                parsed = parsed.fillna(pd.to_datetime(with_dt, errors="coerce"))
+    return parsed.dt.to_period("M").dt.to_timestamp()
+
+
+def clean(raw: pd.DataFrame) -> ParseResult:
+    """Map headers, coerce types, derive missing columns, drop blank rows."""
+    mapping = map_columns(raw.columns)
+    df = raw[list(mapping)].rename(columns=mapping).copy()
+    result = ParseResult(trades=df, mapping=mapping)
+
+    # Excel error cells (#NUM!, #DIV/0!) arrive as text; coerce them to NaN.
+    for col in NUMERIC_COLUMNS:
+        if col in df:
+            df[col] = coerce_numeric(df[col])
+    for col in DATE_COLUMNS:
+        if col in df and col != "month":  # keep raw Month so text periods can be reported
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    if "month" in df:
+        df["period_label"] = df["month"].astype("string")
+
+    # Drop the formatted-but-empty rows Excel sheets usually carry.
+    # Formula columns often evaluate to 0 on empty rows, so judge blankness on
+    # identity columns (stock / dates) rather than on numbers.
+    before = len(df)
+    identity = [c for c in ("stock", "buy_date", "sale_date") if c in df]
+    key_cols = identity or [c for c in ("gross_profit", "pl", "sell") if c in df]
+    if "stock" in df:
+        df["stock"] = df["stock"].astype("string").str.strip().replace("", pd.NA)
+    if key_cols:
+        df = df.dropna(subset=key_cols, how="all")
+    dropped = before - len(df)
+    if dropped:
+        result.notes.append(f"Skipped {dropped:,} blank rows.")
+
+    # Derive values the same way the sheet's formulas do.
+    if "cost_value" not in df and {"qty", "buy"} <= set(df):
+        df["cost_value"] = df["qty"] * df["buy"]
+    if "sale_value" not in df and {"qty", "sell"} <= set(df):
+        df["sale_value"] = df["qty"] * df["sell"]
+    if "pl" not in df and {"sale_value", "cost_value"} <= set(df):
+        df["pl"] = df["sale_value"] - df["cost_value"]
+    if "brokerage" in df:
+        df["brokerage"] = df["brokerage"].fillna(0)
+    if "gross_profit" not in df and "pl" in df:
+        df["gross_profit"] = df["pl"] - df.get("brokerage", 0)
+    if "inv_amount" not in df and {"margin", "lot"} <= set(df):
+        df["inv_amount"] = df["margin"] * df["lot"]
+    if "roi" not in df and {"pl", "inv_amount"} <= set(df):
+        inv = df["inv_amount"].where(df["inv_amount"] > 0)
+        df["roi"] = df["pl"] / inv * 100
+
+    # Month to group by: an explicit Month column wins; the buy date only fills
+    # blanks. Text periods such as "YEAR 2026" are not months and are set aside.
+    month = None
+    if "month" in df:
+        month = _to_month_start(df["month"])
+        blank_month = df["month"].isna()
+        if "buy_date" in df and blank_month.any():
+            filled = _to_month_start(df["buy_date"]).where(blank_month)
+            month = month.fillna(filled)
+            n_filled = int((blank_month & month.notna()).sum())
+            if n_filled:
+                result.notes.append(f"{n_filled} rows had no Month; their Buy Date month was used.")
+    elif "buy_date" in df:
+        month = _to_month_start(df["buy_date"])
+    elif "sale_date" in df:
+        month = _to_month_start(df["sale_date"])
+
+    if month is None:
+        result.errors.append("No date column found. The file needs a 'Month' or 'Buy Date' column.")
+    else:
+        df["month"] = month
+        excluded = df[df["month"].isna()].drop(columns=["month"])
+        if len(excluded):
+            total = float(pd.to_numeric(excluded.get("gross_profit"), errors="coerce").fillna(0).sum()) if "gross_profit" in excluded else 0.0
+            result.warnings.append(
+                f"{len(excluded)} rows have a period that is not a month (or no date) and are excluded "
+                f"from the monthly totals; their profit sums to {total:,.0f}. See 'Excluded rows' below."
+            )
+            result.excluded = excluded.reset_index(drop=True)
+            df = df[df["month"].notna()]
+        df = df.drop(columns=["period_label"], errors="ignore")
+
+    if "gross_profit" not in df:
+        result.errors.append(
+            "Could not find or derive profit. Provide 'Gross Profit', or 'Profit /Loss', "
+            "or Qty + Buy + Sell so it can be calculated."
+        )
+    elif df["gross_profit"].isna().any():
+        n = int(df["gross_profit"].isna().sum())
+        result.warnings.append(f"{n} rows have no profit value and count as 0.")
+        df["gross_profit"] = df["gross_profit"].fillna(0)
+
+    if "stock" not in df:
+        result.warnings.append("No 'Stock' column found; the per-stock breakdown will be unavailable.")
+
+    if df.empty and not result.errors:
+        result.errors.append("The file has headers but no trade rows.")
+
+    result.trades = df.reset_index(drop=True)
+    return result
+
+
+def load_trades(file: IO[bytes], filename: str, sheet_name=0) -> ParseResult:
+    """Read an uploaded file and return a ParseResult."""
+    try:
+        raw = read_any(file, filename, sheet_name)
+    except ValueError as exc:
+        return ParseResult(trades=pd.DataFrame(), errors=[str(exc)])
+    except Exception as exc:  # corrupt / password-protected files
+        return ParseResult(trades=pd.DataFrame(), errors=[f"Could not read the file: {exc}"])
+    if raw.empty:
+        return ParseResult(trades=pd.DataFrame(), errors=["The selected sheet is empty."])
+    return clean(raw)
+
+
+def empty_manual_frame(rows: int = 5) -> pd.DataFrame:
+    """Typed, empty grid for the manual-entry editor."""
+    frame = pd.DataFrame({label: [None] * rows for label in MANUAL_COLUMNS.values()})
+    frame["Buy Date"] = pd.to_datetime(frame["Buy Date"])
+    frame["Sale Date"] = pd.to_datetime(frame["Sale Date"])
+    for canon, label in MANUAL_COLUMNS.items():
+        if canon in NUMERIC_COLUMNS:
+            frame[label] = pd.to_numeric(frame[label])
+    frame["Stock"] = frame["Stock"].astype("string")
+    frame["Type"] = frame["Type"].astype("string")
+    return frame
+
+
+def from_manual(grid: pd.DataFrame) -> ParseResult:
+    """Convert the manual-entry grid (labelled columns) into a ParseResult."""
+    label_to_canon = {label: canon for canon, label in MANUAL_COLUMNS.items()}
+    raw = grid.rename(columns=label_to_canon)
+    raw = raw.dropna(how="all")
+    if raw.empty:
+        return ParseResult(trades=pd.DataFrame(), errors=["Add at least one trade row."])
+    # Re-label to the alias form clean() recognises.
+    raw = raw.rename(columns={canon: COLUMN_ALIASES[canon][0] for canon in raw.columns if canon in COLUMN_ALIASES})
+    return clean(raw)
+
+
+def trade_from_form(**fields) -> ParseResult:
+    """Build a one-row ParseResult from the Add-a-trade form.
+
+    Accepts canonical names (buy_date, stock, type, strike, qty, buy, sale_date,
+    sell, brokerage, margin, lot) and runs them through the same clean() path as
+    an uploaded file, so derived columns match exactly.
+    """
+    raw = pd.DataFrame([{COLUMN_ALIASES[k][0]: v for k, v in fields.items() if k in COLUMN_ALIASES}])
+    return clean(raw)
+
+
+def template_bytes() -> bytes:
+    """Blank Excel template with the headers the upload route expects (and one example row)."""
+    import io
+
+    headers = ["Buy Date", "Month", "STOCK", "Strike Price", "TYPE", "QTY", "Buy", "Sale Date", "Sell",
+               "Brokerage & Other Charges", "Margin", "Lot"]
+    example = ["2026-04-06", "2026-04-01", "TCS", 3400, "Naked Put Sell", 175, 52.13, "2026-04-24", 58.88, 48.5, 48000, 1]
+    frame = pd.DataFrame([example], columns=headers)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="Trades")
+        ws = writer.sheets["Trades"]
+        for idx, col in enumerate(headers, start=1):
+            ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(12, len(col) + 2)
+    return buffer.getvalue()
