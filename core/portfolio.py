@@ -261,3 +261,66 @@ def load_portfolio_multi(file, filename: str, sheets: list) -> PortfolioResult:
     except Exception as exc:
         return PortfolioResult(entries=pd.DataFrame(), errors=[f"Could not read the file: {exc}"])
     return load_portfolio_frames(frames, [str(s) if not isinstance(s, int) else list(frames)[s] for s in sheets])
+
+
+# ---------------------------------------------------------- asset classes --
+import re as _re
+
+ASSET_CLASSES = ["Equity", "ETF", "Equity MF", "Debt"]
+_CLASS_PATTERNS = {
+    "ETF": _re.compile(r"\bETF\b|\bETFS\b|BEES\b"),
+    "Equity MF": _re.compile(r"\bMF\b|\bMFS\b|MUTUAL|\bFUND\b|\bFUNDS\b|DIRECT PLAN|GROWTH PLAN"),
+    "Debt": _re.compile(r"\bDEBT\b|\bBOND\b|\bBONDS\b|\bFD\b|\bNCD\b|\bGILT\b|\bSGB\b|G-SEC|GSEC|LIQUID|TREASURY|\bRBI\b"),
+}
+
+
+def auto_asset_class(sector, stock=None) -> str:
+    """Classify from the sector label first, then from the stock name; default Equity."""
+    for text_ in (str(sector or "").upper(), str(stock or "").upper()):
+        for cls, pattern in _CLASS_PATTERNS.items():
+            if pattern.search(text_):
+                return cls
+    return "Equity"
+
+
+def sector_class_map(entries: pd.DataFrame, overrides: dict | None = None) -> dict[str, str]:
+    """{sector: asset class} for every sector present: saved overrides win, else the auto rules."""
+    overrides = {str(k).upper(): v for k, v in (overrides or {}).items() if v in ASSET_CLASSES}
+    out = {}
+    for sector, group in entries.groupby("sector", dropna=False):
+        key = str(sector).upper()
+        if key in overrides:
+            out[key] = overrides[key]
+        else:
+            # majority vote of the row-level auto classification (stock names can tip it)
+            votes = group.apply(lambda r: auto_asset_class(r["sector"], r.get("stock")), axis=1)
+            out[key] = votes.mode().iat[0] if not votes.empty else "Equity"
+    return out
+
+
+def with_asset_class(entries: pd.DataFrame, overrides: dict | None = None) -> pd.DataFrame:
+    """Add an `asset_class` column using sector_class_map."""
+    if entries.empty:
+        out = entries.copy()
+        out["asset_class"] = pd.Series(dtype="string")
+        return out
+    mapping = sector_class_map(entries, overrides)
+    out = entries.copy()
+    out["asset_class"] = out["sector"].astype(str).str.upper().map(mapping).fillna("Equity").astype("string")
+    return out
+
+
+def asset_class_summary(entries: pd.DataFrame) -> pd.DataFrame:
+    """Cost, share and holdings per asset class, in the fixed class order."""
+    if entries.empty or "asset_class" not in entries:
+        return pd.DataFrame(columns=["Asset class", "Holdings", "Cost", "% Investment", "Gift"])
+    g = entries.groupby("asset_class")
+    out = pd.DataFrame({
+        "Holdings": g["stock"].nunique(),
+        "Cost": g["cost"].sum(),
+        "Gift": g["gift"].sum() if "gift" in entries else 0.0,
+    })
+    total = out["Cost"].sum()
+    out["% Investment"] = out["Cost"] / total * 100 if total else pd.NA
+    out = out.reindex(ASSET_CLASSES).dropna(subset=["Cost"]).reset_index().rename(columns={"asset_class": "Asset class"})
+    return out[["Asset class", "Holdings", "Cost", "% Investment", "Gift"]]

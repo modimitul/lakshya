@@ -8,7 +8,8 @@ from core import state
 from core.benchmarks import BENCHMARK_COLUMNS, Z_COLUMN, normalise_table, with_grand_total
 from core.formatting import inr, pct
 from core.metrics import breakdown, brokerage_table, capital_table, kpis, monthly_summary, to_excel_bytes
-from core.portfolio import filter_entries, holdings, sector_allocation
+from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, holdings,
+                            sector_allocation, sector_class_map, with_asset_class)
 
 owner = state.user_name()
 st.title("Dashboards")
@@ -181,74 +182,131 @@ with trading_tab:
                            "monthly_summary.csv", "text/csv")
 
 # ================================================================ INVESTMENT ==
+def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
+    """KPIs, holdings table, sector donut and top holdings for one slice. Returns sheets for export."""
+    h = holdings(view)
+    alloc = sector_allocation(view)
+    total = float(view["cost"].sum())
+    gifts = float(view["gift"].sum()) if "gift" in view else 0.0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total invested", inr(total, prefix="₹"))
+    c2.metric("Stocks / schemes", f"{len(h)}")
+    c3.metric("Sectors", f"{len(alloc)}")
+    c4.metric("Gifted", inr(gifts, prefix="₹"), help="Sum of GIFT AMOUNT in the holdings shown.")
+
+    st.subheader(heading)
+    shown = h.copy()
+    shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
+    shown["Buy"] = shown["Buy"].map(lambda v: inr(v) if pd.notna(v) else "—")
+    shown["Cost"] = shown["Cost"].map(inr)
+    shown["% Investment"] = shown["% Investment"].map(pct)
+    shown["Gift"] = shown["Gift"].map(lambda v: inr(v) if v else "")
+    total_row = pd.DataFrame([{"Stock": "Grand Total", "Sector": "", "Qty": "", "Buy": "",
+                               "Cost": inr(total), "% Investment": "100.00", "Gift": inr(gifts) if gifts else ""}])
+    shown = pd.concat([shown, total_row], ignore_index=True)
+    st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 22) * 35 + 3)
+
+    left, right = st.columns(2)
+    with left:
+        fig = go.Figure(go.Pie(labels=alloc["Sector"], values=alloc["Cost"], hole=0.45,
+                               hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
+        fig.update_layout(title="Allocation by sector", margin=MARGIN, height=380, legend=dict(orientation="h", y=-0.1))
+        st.plotly_chart(fig, width="stretch", key=f"{key}_sector_pie")
+    with right:
+        top = h.head(12)
+        fig = go.Figure(go.Bar(x=top["Stock"], y=top["% Investment"], marker_color=BLUE,
+                               text=top["% Investment"].map(pct), textposition="outside", customdata=top["Cost"],
+                               hovertemplate="%{x}<br>%{y:.2f}% · ₹%{customdata:,.0f}<extra></extra>"))
+        fig.update_layout(title="Top holdings (% of this class)", yaxis_title="%", margin=MARGIN, height=380)
+        st.plotly_chart(fig, width="stretch", key=f"{key}_top_bar")
+
+    sec = alloc.copy()
+    sec["Cost"] = sec["Cost"].map(inr)
+    sec["% Investment"] = sec["% Investment"].map(pct)
+    with st.expander("Sector table"):
+        st.dataframe(sec, hide_index=True, width="stretch")
+    with st.expander("All entries (as uploaded)"):
+        raw_view = view.copy()
+        raw_view["month"] = raw_view["month"].dt.strftime("%b-%y")
+        st.dataframe(raw_view, hide_index=True, width="stretch")
+    return {f"{heading[:20]} holdings": h, f"{heading[:20]} sectors": alloc}
+
+
 with invest_tab:
     entries = state.get_frame("portfolio")
     if entries is None or entries.empty:
         st.info("No long-term holdings loaded for this owner yet.")
         st.page_link("screens/portfolio_input.py", label="Go to Investment Book", icon="📥")
     else:
-        years = sorted(int(y) for y in entries["month"].dt.year.dropna().unique())
-        sectors = sorted(entries["sector"].dropna().unique())
-        months = [m for m in entries.sort_values("month")["month"].dt.strftime("%b-%y").dropna().unique()]
+        overrides = state.get_meta().get("asset_class_overrides", {})
+        classified = with_asset_class(entries, overrides)
+
+        years = sorted(int(y) for y in classified["month"].dt.year.dropna().unique())
+        sectors = sorted(classified["sector"].dropna().unique())
+        months = [m for m in classified.sort_values("month")["month"].dt.strftime("%b-%y").dropna().unique()]
         f1, f2, f3 = st.columns(3)
         year_pick = f1.multiselect("Year", years, placeholder="All years")
         sector_pick = f2.multiselect("Sectors", sectors, placeholder="All sectors")
         month_pick = f3.multiselect("Month", months, placeholder="All months")
-        view = filter_entries(entries, year_pick, sector_pick, month_pick)
+        view = filter_entries(classified, year_pick, sector_pick, month_pick)
+
+        with st.expander("Asset class rules (which sectors count as ETF, Equity MF or Debt)"):
+            st.caption("Everything not listed here is Equity. Rules are saved for this owner; new sectors are "
+                       "classified automatically from their name until you change them here.")
+            current_map = sector_class_map(classified, overrides)
+            all_sectors = sorted(current_map)
+            picks = {}
+            cols = st.columns(3)
+            for col, cls in zip(cols, ASSET_CLASSES[1:]):
+                picks[cls] = col.multiselect(cls, all_sectors, default=[s for s in all_sectors if current_map[s] == cls],
+                                             key=f"class_pick_{cls}")
+            chosen = {}
+            for cls, secs in picks.items():
+                for sec in secs:
+                    if sec in chosen:
+                        st.error(f"{sec} is listed under both {chosen[sec]} and {cls}; pick one.")
+                    chosen[sec] = cls
+            new_overrides = {sec: chosen.get(sec, "Equity") for sec in all_sectors}
+            if st.button("Save asset class rules") and new_overrides != {k: current_map[k] for k in all_sectors}:
+                state.put_meta({"asset_class_overrides": new_overrides})
+                st.rerun()
 
         if view.empty:
             st.warning("No holdings match these filters.")
         else:
-            h = holdings(view)
-            alloc = sector_allocation(view)
-            total = float(view["cost"].sum())
-            gifts = float(view["gift"].sum()) if "gift" in view else 0.0
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total invested", inr(total, prefix="₹"))
-            c2.metric("Stocks", f"{len(h)}")
-            c3.metric("Sectors", f"{len(alloc)}")
-            c4.metric("Gifted", inr(gifts, prefix="₹"), help="Sum of GIFT AMOUNT in the selected holdings.")
-
-            title_bits = [owner, "Investment Book"] + ([", ".join(str(y) for y in year_pick)] if year_pick else [])
-            st.subheader(" · ".join(title_bits))
-            shown = h.copy()
-            shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
-            shown["Buy"] = shown["Buy"].map(lambda v: inr(v) if pd.notna(v) else "—")
-            shown["Cost"] = shown["Cost"].map(inr)
-            shown["% Investment"] = shown["% Investment"].map(pct)
-            shown["Gift"] = shown["Gift"].map(lambda v: inr(v) if v else "")
-            total_row = pd.DataFrame([{"Stock": "Grand Total", "Sector": "", "Qty": "", "Buy": "",
-                                       "Cost": inr(total), "% Investment": "100.00", "Gift": inr(gifts) if gifts else ""}])
-            shown = pd.concat([shown, total_row], ignore_index=True)
-            st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 22) * 35 + 3)
-
-            left, right = st.columns([1, 1])
-            with left:
-                fig = go.Figure(go.Pie(labels=alloc["Sector"], values=alloc["Cost"], hole=0.45,
+            summary = asset_class_summary(view)
+            total_all = float(view["cost"].sum())
+            st.subheader(f"{owner} · Investment Book" + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
+            o1, o2 = st.columns([1, 1])
+            with o1:
+                shown = summary.copy()
+                shown["Cost"] = shown["Cost"].map(inr)
+                shown["% Investment"] = shown["% Investment"].map(pct)
+                shown["Gift"] = shown["Gift"].map(lambda v: inr(v) if v else "")
+                total_row = pd.DataFrame([{"Asset class": "Grand Total", "Holdings": int(view["stock"].nunique()),
+                                           "Cost": inr(total_all), "% Investment": "100.00",
+                                           "Gift": inr(view["gift"].sum()) if "gift" in view and view["gift"].sum() else ""}])
+                st.dataframe(pd.concat([shown, total_row], ignore_index=True), hide_index=True, width="stretch",
+                             height=(len(shown) + 2) * 35 + 3)
+            with o2:
+                fig = go.Figure(go.Pie(labels=summary["Asset class"], values=summary["Cost"], hole=0.45,
                                        hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
-                fig.update_layout(title="Allocation by sector", margin=MARGIN, height=380, legend=dict(orientation="h", y=-0.1))
-                st.plotly_chart(fig, width="stretch")
-            with right:
-                top = h.head(12)
-                fig = go.Figure(go.Bar(x=top["Stock"], y=top["% Investment"], marker_color=BLUE,
-                                       text=top["% Investment"].map(pct), textposition="outside",
-                                       hovertemplate="%{x}<br>%{y:.2f}% · ₹%{customdata:,.0f}<extra></extra>", customdata=top["Cost"]))
-                fig.update_layout(title="Top holdings (% of investment)", yaxis_title="%", margin=MARGIN, height=380)
-                st.plotly_chart(fig, width="stretch")
+                fig.update_layout(title="Allocation by asset class", margin=MARGIN, height=300, legend=dict(orientation="h", y=-0.1))
+                st.plotly_chart(fig, width="stretch", key="asset_class_pie")
 
-            sec = alloc.copy()
-            sec["Cost"] = sec["Cost"].map(inr)
-            sec["% Investment"] = sec["% Investment"].map(pct)
-            with st.expander("Sector table"):
-                st.dataframe(sec, hide_index=True, width="stretch")
-            with st.expander("All entries (as uploaded)"):
-                raw_view = view.copy()
-                raw_view["month"] = raw_view["month"].dt.strftime("%b-%y")
-                st.dataframe(raw_view, hide_index=True, width="stretch")
+            inv_sheets = {"Asset classes": summary}
+            class_tabs = st.tabs(ASSET_CLASSES)
+            for tab, cls in zip(class_tabs, ASSET_CLASSES):
+                with tab:
+                    slice_ = view[view["asset_class"] == cls]
+                    if slice_.empty:
+                        st.info(f"No {cls} holdings in the current selection.")
+                    else:
+                        inv_sheets.update(render_holdings(slice_, f"{cls}", key=cls.replace(" ", "_").lower()))
+            inv_sheets["Entries"] = view.assign(Month=view["month"].dt.strftime("%b-%y"))
 
             st.subheader("Download")
-            inv_sheets = {"Holdings": h, "Sectors": alloc, "Entries": view.assign(Month=view["month"].dt.strftime("%b-%y"))}
             st.download_button("Download investment report (Excel)", to_excel_bytes(inv_sheets),
                                f"investment_report_{state.current_user()}.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")

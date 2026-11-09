@@ -300,3 +300,25 @@ def test_schema_grows_when_a_frame_adds_a_column(tmp_path, monkeypatch):
     store.save_frame("y", "portfolio", pd.DataFrame({"month": pd.to_datetime(["2022-01-01"]), "stock": ["DMART"], "cost": [366044.0], "gift": [366044.0]}))
     assert store.load_frame("y", "portfolio")["gift"].iloc[0] == 366044.0
     assert store.load_frame("x", "portfolio")["cost"].iloc[0] == 108959.0  # x is untouched by y's new column
+
+
+# ----------------------------------------------------------- asset classes ----
+def test_asset_class_rules_and_overrides():
+    from core.portfolio import clean_portfolio, with_asset_class, asset_class_summary, sector_class_map
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23"] * 6,
+        "SECTORS": ["CHEMICALS", "ETF", "MF", "DEBT", "GOLD", "FMCG"],
+        "STOCK": ["SRF", "NIFTYBEES", "HDFC INNOVATION FUND - DIRECT PLAN", "SGB 2032", "GOLDBEES", "HINDUNILVR"],
+        "QTY": [1] * 6, "BUY": [100, 200, 300, 400, 500, 600],
+    })
+    entries = clean_portfolio(raw).entries
+    classified = with_asset_class(entries)
+    assert classified.set_index("stock")["asset_class"].to_dict() == {
+        "SRF": "Equity", "NIFTYBEES": "ETF", "HDFC INNOVATION FUND - DIRECT PLAN": "Equity MF",
+        "SGB 2032": "Debt", "GOLDBEES": "ETF", "HINDUNILVR": "Equity",
+    }
+    summary = asset_class_summary(classified)
+    assert summary["Asset class"].tolist() == ["Equity", "ETF", "Equity MF", "Debt"]
+    assert summary["Cost"].tolist() == [700, 700, 300, 400]
+    assert sector_class_map(entries, {"GOLD": "Debt"})["GOLD"] == "Debt"
+    assert with_asset_class(entries, {"GOLD": "Debt"}).query("stock == 'GOLDBEES'")["asset_class"].iat[0] == "Debt"

@@ -11,7 +11,7 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Trading Book | Trades by upload or an *Add trade* form; monthly capital; annual ROI vs benchmarks (Nifty, Bank Nifty, NASDAQ, …) |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
 | Dashboards → Trading | KPIs, monthly table (capital, net profit, brokerage, ROI, win rate), capital and brokerage pivots with Grand Total, annual ROI vs benchmarks, breakdown by stock/strategy, trade log, Excel download |
-| Dashboards → Investments | Year / sector / month filters, holdings by stock with % Investment, sector allocation, gifts, Excel download |
+| Dashboards → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt) with a sub-tab per class: holdings by stock with % Investment, sector allocation, gifts; Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners. Each
 owner's data is saved in a SQL database on the server (SQLite file
@@ -27,7 +27,8 @@ owners can save at the same moment safely.
 | Brokerage | Sum of `Brokerage & Other Charges` per month. Grand Total = sum. |
 | Monthly ROI | Net Profit ÷ Average of Capital × 100. Grand Total and yearly `Z ROI%` = sum of monthly ROI. |
 | Benchmarks (Nifty ROI%, …) | Entered per year by the user or uploaded; not derivable from a trade log. Grand Total = sum of years. |
-| % Investment | Stock cost ÷ total cost of the holdings currently shown × 100. |
+| % Investment | Stock cost ÷ total cost of the holdings currently shown × 100 (inside a class tab, the class total). |
+| Asset class | From the SECTORS label, then the stock name: ETF/BEES → ETF; MF/MUTUAL/FUND → Equity MF; DEBT/BOND/SGB/GILT/LIQUID/FD/NCD → Debt; otherwise Equity. Adjust per owner under *Asset class rules* on the Investments tab. |
 
 Rows whose period is not a calendar month (e.g. `YEAR 2026`) are shown under
 "Excluded rows" and left out of monthly totals. Formatted-but-empty Excel rows,

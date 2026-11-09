@@ -94,3 +94,23 @@ def test_sign_in_with_new_username_creates_owner(monkeypatch):
     by_label(at2.button, "Sign in").click().run()
     names = sorted(u["name"] for u in at2.session_state["users"])
     assert names == ["Priya", "Rahul"]
+
+
+def test_asset_class_rules_can_be_saved_from_the_dashboard(tmp_path, monkeypatch):
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
+    store._engines.clear()
+    raw = pd.DataFrame({"MONTH": ["Jul-23", "Jul-23"], "SECTORS": ["GOLD", "BANKS"], "STOCK": ["GOLDBEES", "KOTAKBANK"],
+                        "QTY": [1, 1], "BUY": [100, 200]})
+    store.save_users([{"slug": "owner", "name": "Owner"}])
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+    at = app("screens/reports.py")
+    assert by_label(at.multiselect, "ETF").value == ["GOLD"]          # auto rule: GOLDBEES is an ETF
+    by_label(at.multiselect, "ETF").set_value([])
+    by_label(at.multiselect, "Debt").set_value(["GOLD"])
+    by_label(at.button, "Save asset class rules").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert store.load_json("owner", "meta")["asset_class_overrides"] == {"BANKS": "Equity", "GOLD": "Debt"}
+    assert by_label(at.multiselect, "Debt").value == ["GOLD"]
