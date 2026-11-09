@@ -94,3 +94,24 @@ def bump(key: str) -> int:
 
 def version(key: str) -> int:
     return st.session_state.get(key, 0)
+
+
+def cached_workbook(upload, key: str):
+    """Read an uploaded workbook once per upload and keep the frames in the session.
+
+    Returns {sheet: DataFrame} or None (with the error shown) if it cannot be read.
+    """
+    from .parse import read_workbook
+
+    fingerprint = f"{upload.name}:{upload.size}"
+    if st.session_state.get(f"{key}_fp") != fingerprint:
+        try:
+            with st.spinner(f"Reading {upload.name} …"):
+                st.session_state[key] = read_workbook(upload, upload.name)
+        except Exception as exc:
+            st.error(f"Could not read the file: {exc}")
+            st.session_state.pop(key, None)
+            st.session_state.pop(f"{key}_fp", None)
+            return None
+        st.session_state[f"{key}_fp"] = fingerprint
+    return st.session_state.get(key)

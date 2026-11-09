@@ -7,14 +7,13 @@ import streamlit as st
 
 from core import state
 from core.formatting import inr
-from core.parse import EXCEL_EXTENSIONS, list_sheets
 from core.portfolio import (
     COMMON_SECTORS,
     PortfolioResult,
     dedupe_entries,
     entry_from_form,
-    load_portfolio_multi,
-    looks_like_portfolio_sheet,
+    load_portfolio_frames,
+    looks_like_portfolio_frame,
     portfolio_template_bytes,
 )
 
@@ -57,22 +56,18 @@ if mode == "Upload a file":
             type=["xlsx", "xlsm", "xls", "csv"], key="portfolio_upload",
             help="Columns: MONTH, SECTORS, STOCK, QTY, BUY, COST, GIFT AMOUNT. Months may be dates or text like Jul-23.",
         )
-    if upload is not None:
-        sheets = [0]
-        if upload.name.lower().endswith(EXCEL_EXTENSIONS):
-            try:
-                sheets = list_sheets(upload)
-            except Exception as exc:
-                sheets = []
-                st.error(f"Could not open the workbook: {exc}")
+    frames = state.cached_workbook(upload, "portfolio_wb") if upload is not None else None
+    if frames:
+        sheets = list(frames)
         chosen = sheets
         if len(sheets) > 1:
-            detected = [sh for sh in sheets if looks_like_portfolio_sheet(upload, upload.name, sh)]
+            detected = [sh for sh in sheets if looks_like_portfolio_frame(frames[sh])]
             chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets, key="portfolio_tabs")
         how = st.radio("How to import", ["Replace this owner's holdings", "Add to existing holdings (duplicates skipped)"],
                        horizontal=True, index=0 if entries is None or entries.empty else 1, key="portfolio_how")
         if st.button("Import", type="primary", disabled=not chosen, key="portfolio_import"):
-            result = load_portfolio_multi(upload, upload.name, chosen)
+            with st.spinner("Importing …"):
+                result = load_portfolio_frames(frames, chosen)
             show_messages(result)
             if result.ok:
                 incoming = result.entries

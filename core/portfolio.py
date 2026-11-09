@@ -165,6 +165,11 @@ def portfolio_template_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def looks_like_portfolio_frame(frame: pd.DataFrame) -> bool:
+    mapped = set(map_columns(frame.columns, PORTFOLIO_ALIASES).values())
+    return "stock" in mapped and bool(mapped & {"cost", "buy", "qty"})
+
+
 def looks_like_portfolio_sheet(file, filename: str, sheet_name) -> bool:
     from .parse import sheet_headers
     try:
@@ -181,24 +186,37 @@ def dedupe_entries(entries: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return out, before - len(out)
 
 
-def load_portfolio_multi(file, filename: str, sheets: list) -> PortfolioResult:
-    frames, mapping = [], {}
+def load_portfolio_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) -> PortfolioResult:
+    parts, mapping = [], {}
     result = PortfolioResult(entries=pd.DataFrame())
     for sheet in sheets:
-        part = load_portfolio(file, filename, sheet)
         label = f"Sheet '{sheet}'"
+        raw = frames.get(str(sheet))
+        if raw is None or raw.empty:
+            result.warnings.append(f"{label}: empty or missing.")
+            continue
+        part = clean_portfolio(raw)
         if part.errors:
             result.warnings.append(f"{label}: " + " ".join(part.errors))
             continue
         part.entries["source_sheet"] = str(sheet)
-        frames.append(part.entries)
+        parts.append(part.entries)
         mapping.update(part.mapping)
         result.notes.append(f"{label}: {len(part.entries):,} holdings")
         for w in part.warnings:
             result.warnings.append(f"{label}: {w}")
-    if not frames:
+    if not parts:
         result.errors.append("None of the selected sheets could be read as a portfolio.")
         return result
-    result.entries = pd.concat(frames, ignore_index=True)
+    result.entries = pd.concat(parts, ignore_index=True)
     result.mapping = mapping
     return result
+
+
+def load_portfolio_multi(file, filename: str, sheets: list) -> PortfolioResult:
+    from .parse import read_workbook
+    try:
+        frames = read_workbook(file, filename)
+    except Exception as exc:
+        return PortfolioResult(entries=pd.DataFrame(), errors=[f"Could not read the file: {exc}"])
+    return load_portfolio_frames(frames, [str(s) if not isinstance(s, int) else list(frames)[s] for s in sheets])

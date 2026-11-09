@@ -109,6 +109,42 @@ def map_columns(columns, aliases: dict[str, list[str]] | None = None) -> dict[st
     return mapping
 
 
+def excel_engine() -> str:
+    """calamine (fast, low memory, reads .xls too) when installed, else openpyxl."""
+    try:
+        import python_calamine  # noqa: F401
+        return "calamine"
+    except ImportError:
+        return "openpyxl"
+
+
+def read_workbook(file: IO[bytes] | str, filename: str) -> dict[str, pd.DataFrame]:
+    """Read every sheet in ONE pass: {sheet name: DataFrame}. CSV gives a single sheet."""
+    try:
+        file.seek(0)
+    except AttributeError:
+        pass
+    lower = filename.lower()
+    if lower.endswith(".csv"):
+        return {"CSV": pd.read_csv(file)}
+    if not lower.endswith(EXCEL_EXTENSIONS):
+        raise ValueError(f"Unsupported file type: {filename}. Upload .xlsx, .xlsm, .xls or .csv.")
+    engine = excel_engine()
+    if lower.endswith(".xls") and engine != "calamine":
+        try:
+            import xlrd  # noqa: F401
+            engine = "xlrd"
+        except ImportError as exc:
+            raise ValueError("Legacy .xls needs 'python-calamine' or 'xlrd'; or save the file as .xlsx.") from exc
+    frames = pd.read_excel(file, sheet_name=None, engine=engine)
+    return {str(name): frame for name, frame in frames.items()}
+
+
+def looks_like_trade_frame(frame: pd.DataFrame) -> bool:
+    mapped = set(map_columns(frame.columns).values())
+    return "stock" in mapped and bool(mapped & {"gross_profit", "pl", "sell", "sale_value"})
+
+
 def list_sheets(file: IO[bytes] | str) -> list[str]:
     """Sheet names of an Excel upload (empty list for CSV)."""
     try:
@@ -357,22 +393,26 @@ def dedupe_trades(trades: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return out, before - len(out)
 
 
-def load_trades_multi(file: IO[bytes], filename: str, sheets: list) -> ParseResult:
-    """Import several sheets of one workbook (e.g. one tab per year) into one ParseResult.
+def load_trades_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) -> ParseResult:
+    """Import several already-read sheets (e.g. one tab per year) into one ParseResult.
 
     Each sheet is cleaned independently; a `source_sheet` column records where
     each row came from. Sheets that fail are reported as warnings unless all fail.
     """
-    frames, excluded, mapping = [], [], {}
+    parts, excluded, mapping = [], [], {}
     result = ParseResult(trades=pd.DataFrame())
     for sheet in sheets:
-        part = load_trades(file, filename, sheet)
         label = f"Sheet '{sheet}'"
+        raw = frames.get(str(sheet))
+        if raw is None or raw.empty:
+            result.warnings.append(f"{label}: empty or missing.")
+            continue
+        part = clean(raw)
         if part.errors:
             result.warnings.append(f"{label}: " + " ".join(part.errors))
             continue
         part.trades["source_sheet"] = str(sheet)
-        frames.append(part.trades)
+        parts.append(part.trades)
         if not part.excluded.empty:
             part.excluded["source_sheet"] = str(sheet)
             excluded.append(part.excluded)
@@ -380,13 +420,22 @@ def load_trades_multi(file: IO[bytes], filename: str, sheets: list) -> ParseResu
         result.notes.append(f"{label}: {len(part.trades):,} trades" + (f", {len(part.excluded)} excluded" if len(part.excluded) else ""))
         for w in part.warnings:
             result.warnings.append(f"{label}: {w}")
-    if not frames:
+    if not parts:
         result.errors.append("None of the selected sheets could be read as a trade log.")
         return result
-    result.trades = pd.concat(frames, ignore_index=True)
+    result.trades = pd.concat(parts, ignore_index=True)
     result.excluded = pd.concat(excluded, ignore_index=True) if excluded else pd.DataFrame()
     result.mapping = mapping
     return result
+
+
+def load_trades_multi(file: IO[bytes], filename: str, sheets: list) -> ParseResult:
+    """File-based convenience wrapper around load_trades_frames (reads the workbook once)."""
+    try:
+        frames = read_workbook(file, filename)
+    except Exception as exc:
+        return ParseResult(trades=pd.DataFrame(), errors=[f"Could not read the file: {exc}"])
+    return load_trades_frames(frames, [str(s) if not isinstance(s, int) else list(frames)[s] for s in sheets])
 
 
 # ------------------------------------------------------------ capital sheet --
@@ -397,14 +446,20 @@ CAPITAL_ALIASES: dict[str, list[str]] = {
 
 
 def load_capital_sheet(file: IO[bytes], filename: str, sheet_name=0) -> tuple[pd.DataFrame | None, list[str]]:
-    """Read a Month / Capital table (the 'Average of Capital' pivot works as-is).
-
-    Returns a frame with columns month (month start) and Capital, Grand Total rows dropped.
-    """
+    """File-based wrapper around load_capital_frame."""
     try:
         raw = read_any(file, filename, sheet_name)
     except Exception as exc:
         return None, [f"Could not read the file: {exc}"]
+    return load_capital_frame(raw)
+
+
+def load_capital_frame(raw: pd.DataFrame) -> tuple[pd.DataFrame | None, list[str]]:
+    """Read a Month / Capital table (the 'Average of Capital' pivot works as-is).
+
+    Returns a frame with columns month (month start) and Capital, Grand Total rows dropped.
+    """
+    raw = raw.copy()
     mapping = map_columns(raw.columns, CAPITAL_ALIASES)
     if not {"month", "capital"} <= set(mapping.values()):
         # Pivot exports often have no header row: try the first two columns.

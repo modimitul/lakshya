@@ -57,6 +57,11 @@ pre-selected; untick pivot or summary tabs. Choose **Replace** (first load) or
 skipped, so re-importing a tab is safe. Each row remembers its tab in
 `source_sheet`. Investment Book works the same way for holdings.
 
+Large workbooks: the file is read once per session with the calamine engine
+(openpyxl is the fallback) and kept in memory while you pick tabs and import, so
+a 5 MB export with many formatted-but-empty rows takes seconds, not minutes.
+While the server is working the page fades and a spinner shows; that is normal.
+
 Monthly capital can be uploaded under *2. Monthly capital*: any sheet with a
 Month (or "Row Labels") column and a Capital (or "Average of Capital") column;
 Grand Total rows are ignored. A `Capital` column in the trade rows is also used.
