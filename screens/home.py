@@ -19,7 +19,7 @@ for i, u in enumerate(users):
     capital = state.get_frame("capital", u["slug"])
     with cols[i % len(cols)]:
         with st.container(border=True):
-            st.markdown(f"**{u['name']}**" + ("  ·  selected" if u["slug"] == current else ""))
+            st.markdown(f"**{u['name']}**" + ("  ·  selected" if u["slug"] == current else "") + ("  ·  default" if u["slug"] == state.default_owner() else ""))
             if trades is None or trades.empty:
                 st.write("Trading: no trades yet")
             else:
@@ -41,7 +41,7 @@ with m:
     st.write("Upload holdings or add them one at a time: month, sector, stock, quantity, buy price, gifts.")
     st.page_link("screens/portfolio_input.py", label="Open", icon="📥")
 with r:
-    st.subheader("Dashboards")
+    st.subheader("Dashboard Reports")
     st.write("Trading (monthly ROI, capital, brokerage, annual ROI vs Nifty and others) and Investments (holdings, sectors, % investment).")
     st.page_link("screens/reports.py", label="Open", icon="📊")
 
@@ -52,6 +52,14 @@ with st.expander("Manage portfolio owners"):
     for u in users:
         new = st.text_input(f"Name for {u['slug']}", value=u["name"], key=f"rename_{u['slug']}")
         renamed.append({"slug": u["slug"], "name": new.strip() or u["name"]})
+    options = ["(none)"] + [u["slug"] for u in users]
+    current_default = state.default_owner()
+    pick = st.selectbox("Default owner (shown first when nobody has signed in)", options,
+                        index=options.index(current_default) if current_default in options else 0,
+                        format_func=lambda v: v if v == "(none)" else state.user_name(v), key="home_default_owner")
+    if (None if pick == "(none)" else pick) != current_default:
+        state.set_default_owner(None if pick == "(none)" else pick)
+        st.rerun()
     c1, c2 = st.columns([1, 2])
     if c1.button("Save names"):
         state.set_users(renamed)

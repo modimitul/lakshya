@@ -138,3 +138,24 @@ def test_benchmarks_screen_renders_and_dashboard_compares(tmp_path, monkeypatch)
     assert not at.exception, [e.value for e in at.exception]
     yearly_table = at.dataframe[0].value
     assert yearly_table["Year"].iloc[0].startswith("FY ")
+
+
+def test_default_owner_is_used_when_nobody_signed_in(tmp_path, monkeypatch):
+    from core import store
+    monkeypatch.setenv("LAKSHYA_DATA_DIR", str(tmp_path))
+    store._engines.clear()
+    store.save_users([{"slug": "rahul", "name": "Rahul"}, {"slug": "priya", "name": "Priya"}])
+    store.save_json("_shared", "default_owner", "priya")
+    at = app()
+    assert at.session_state["user"] == "priya"
+    # sections appear in the new order on the Trading tab: yearly before monthly, monthly collapsed
+    store.save_frame("priya", "trades", __import__("pandas").DataFrame({
+        "month": __import__("pandas").to_datetime(["2026-04-01"]), "buy_date": __import__("pandas").to_datetime(["2026-04-06"]),
+        "stock": ["TCS"], "gross_profit": [100.0], "brokerage": [1.0], "entry_kind": ["trade"]}))
+    at = app("screens/reports.py")
+    assert not at.exception, [e.value for e in at.exception]
+    headers = [h.value for h in at.subheader]
+    assert headers.index("Yearly performance") < headers.index("Breakdown")
+    assert "Monthly performance" not in headers                     # it is an expander now
+    assert any(e.label == "Monthly performance" for e in at.expander)
+    assert any(e.label == "Capital and charges" for e in at.expander)

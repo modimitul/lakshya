@@ -11,8 +11,8 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Trading Book | Trades by upload or an *Add trade* form; monthly capital |
 | Benchmarks | Monthly % returns of indices/ETFs (Nifty, Nifty BEES, Bank Nifty, NIFTY IT, NASDAQ, DJI, MAFANG, Gold BEES, Silver BEES), shared by all owners; grid or upload; ships with Apr-2022 → Oct-2026 built in |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
-| Dashboards → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs; yearly table (Investments = avg capital, Net Profit, Yearly ROI, with Grand Total); monthly table; capital and brokerage pivots; *My returns vs benchmarks* per year/FY with cumulative chart; breakdown by stock/strategy; trade log; Excel download |
-| Dashboards → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt) with a sub-tab per class: holdings by stock with % Investment, sector allocation, gifts; Excel download |
+| Dashboard Reports → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs; yearly table (Investments = avg capital, Net Profit, Yearly ROI, with Grand Total); *My returns vs benchmarks* per year/FY with cumulative chart; then collapsed Monthly performance and Capital & charges; breakdown by stock/strategy; trade log; Excel download |
+| Dashboard Reports → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt) with a sub-tab per class: holdings by stock with % Investment, sector allocation, gifts; Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners. Each
 owner's data is saved in a SQL database on the server (SQLite file
@@ -45,7 +45,8 @@ Set `APP_PASSWORD` in the environment (the Lightsail setup script passes it into
 the service) and the app shows one sign-in screen: a typed **Username** and the
 single shared **Password**. A new username creates a new portfolio owner; an
 existing one opens theirs. The sidebar shows who is signed in, lets you switch
-owner, and has *Rename or add owner*. There are no per-user passwords: anyone
+owner, and has *Rename or add owner*, including *Make this the default owner*:
+the default owner is shown first when nobody has signed in (also settable on Home). There are no per-user passwords: anyone
 with the shared password can view every owner's data. If you need strict
 separation, ask for per-user passwords; it is a small change.
 
@@ -210,7 +211,7 @@ screens/home.py             status per owner, owner management
 screens/trading_input.py    Trading Book: trades (upload / form), monthly capital, benchmarks
 screens/portfolio_input.py  Investment Book: long-term holdings (upload / form)
 screens/benchmarks.py       Benchmarks: shared monthly index returns (grid / upload / reset)
-screens/reports.py          Dashboards: Trading and Investments tabs
+screens/reports.py          Dashboard Reports: Trading and Investments tabs
 core/parse.py               header matching, type coercion, derived trade columns, templates
 core/portfolio.py           portfolio parsing, holdings, sector allocation
 core/benchmarks.py          monthly benchmark store, FY/CY period labels, comparison tables

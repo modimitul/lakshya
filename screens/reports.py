@@ -13,7 +13,7 @@ from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, 
                             sector_allocation, sector_class_map, with_asset_class)
 
 owner = state.user_name()
-st.title("Dashboards")
+st.title("Dashboard Reports")
 st.caption(f"Portfolio owner: **{owner}**")
 
 GREEN, RED, BLUE = "#2E7D32", "#C62828", "#1F4E79"
@@ -109,60 +109,6 @@ with trading_tab:
                               legend=dict(orientation="h", y=-0.2))
             st.plotly_chart(fig, width="stretch", key="yearly_chart")
 
-        # ---- monthly table
-        st.subheader("Monthly performance")
-        table = pd.DataFrame({
-            "Month": summary["Month"],
-            "Average of Capital": summary["Average of Capital"].map(inr),
-            "Net Profit": summary["Net Profit"].map(inr),
-            "Brokerage": summary["Brokerage"].map(inr),
-            "Monthly ROI": summary["Monthly ROI"].map(pct),
-            "Trades": summary["Trades"],
-            "Win rate %": summary["Win rate"].map(lambda v: pct(v, 1)),
-        })
-        cap_mean = pd.to_numeric(summary["Average of Capital"], errors="coerce").mean()
-        total_row = pd.DataFrame([{
-            "Month": "Grand Total",
-            "Average of Capital": inr(cap_mean) if pd.notna(cap_mean) else "—",
-            "Net Profit": inr(summary["Net Profit"].sum()),
-            "Brokerage": inr(pd.to_numeric(summary["Brokerage"], errors="coerce").sum()),
-            "Monthly ROI": pct(summary["Monthly ROI"].sum(min_count=1)) if summary["Monthly ROI"].notna().any() else "—",
-            "Trades": int(summary["Trades"].sum()),
-            "Win rate %": pct(k["win_rate"], 1) if k["win_rate"] is not None else "—",
-        }])
-        monthly_table = pd.concat([table, total_row], ignore_index=True)
-        st.dataframe(monthly_table, hide_index=True, width="stretch", height=(len(monthly_table) + 1) * 35 + 3)
-        st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
-
-        left, right = st.columns(2)
-        with left:
-            st.plotly_chart(bar_signed(summary["Month"], summary["Net Profit"], "Net profit by month",
-                                       text=summary["Net Profit"].map(inr)), width="stretch")
-        with right:
-            roi = summary.dropna(subset=["Monthly ROI"])
-            fig = go.Figure(go.Scatter(x=roi["Month"], y=roi["Monthly ROI"], mode="lines+markers",
-                                       line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
-            fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
-            if roi.empty:
-                fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
-            st.plotly_chart(fig, width="stretch")
-
-        # ---- capital & brokerage pivots
-        st.subheader("Capital and charges")
-        p1, p2, p3 = st.columns([1, 1, 2])
-        cap_t = capital_table(summary)
-        cap_t["Average of Capital"] = cap_t["Average of Capital"].map(inr)
-        p1.dataframe(cap_t, hide_index=True, width="stretch", height=(len(cap_t) + 1) * 35 + 3)
-        brk_t = brokerage_table(summary)
-        brk_t["Brokerage"] = brk_t["Brokerage"].map(inr)
-        p2.dataframe(brk_t, hide_index=True, width="stretch", height=(len(brk_t) + 1) * 35 + 3)
-        with p3:
-            brk = pd.to_numeric(summary["Brokerage"], errors="coerce").fillna(0)
-            fig = go.Figure(go.Bar(x=summary["Month"], y=brk, marker_color=BLUE, text=brk.map(inr), textposition="outside",
-                                   hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
-            fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=380)
-            st.plotly_chart(fig, width="stretch")
-
         # ---- my returns vs benchmarks (monthly data, summed per period over the owner's months)
         st.subheader("My returns vs benchmarks")
         bench_monthly = get_monthly()
@@ -202,6 +148,60 @@ with trading_tab:
                 fig.update_layout(title="Cumulative monthly return (%)", yaxis_title="%", margin=MARGIN, height=380,
                                   legend=dict(orientation="h", y=-0.25))
                 st.plotly_chart(fig, width="stretch", key="cmp_cum")
+
+        # ---- monthly detail (collapsed: lots of rows)
+        with st.expander("Monthly performance", expanded=False):
+            table = pd.DataFrame({
+                "Month": summary["Month"],
+                "Average of Capital": summary["Average of Capital"].map(inr),
+                "Net Profit": summary["Net Profit"].map(inr),
+                "Brokerage": summary["Brokerage"].map(inr),
+                "Monthly ROI": summary["Monthly ROI"].map(pct),
+                "Trades": summary["Trades"],
+                "Win rate %": summary["Win rate"].map(lambda v: pct(v, 1)),
+            })
+            cap_mean = pd.to_numeric(summary["Average of Capital"], errors="coerce").mean()
+            total_row = pd.DataFrame([{
+                "Month": "Grand Total",
+                "Average of Capital": inr(cap_mean) if pd.notna(cap_mean) else "—",
+                "Net Profit": inr(summary["Net Profit"].sum()),
+                "Brokerage": inr(pd.to_numeric(summary["Brokerage"], errors="coerce").sum()),
+                "Monthly ROI": pct(summary["Monthly ROI"].sum(min_count=1)) if summary["Monthly ROI"].notna().any() else "—",
+                "Trades": int(summary["Trades"].sum()),
+                "Win rate %": pct(k["win_rate"], 1) if k["win_rate"] is not None else "—",
+            }])
+            monthly_table = pd.concat([table, total_row], ignore_index=True)
+            st.dataframe(monthly_table, hide_index=True, width="stretch", height=(len(monthly_table) + 1) * 35 + 3)
+            st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
+
+            left, right = st.columns(2)
+            with left:
+                st.plotly_chart(bar_signed(summary["Month"], summary["Net Profit"], "Net profit by month",
+                                           text=summary["Net Profit"].map(inr)), width="stretch")
+            with right:
+                roi = summary.dropna(subset=["Monthly ROI"])
+                fig = go.Figure(go.Scatter(x=roi["Month"], y=roi["Monthly ROI"], mode="lines+markers",
+                                           line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
+                fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
+                if roi.empty:
+                    fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
+                st.plotly_chart(fig, width="stretch")
+
+        # ---- capital & charges (collapsed)
+        with st.expander("Capital and charges", expanded=False):
+            p1, p2, p3 = st.columns([1, 1, 2])
+            cap_t = capital_table(summary)
+            cap_t["Average of Capital"] = cap_t["Average of Capital"].map(inr)
+            p1.dataframe(cap_t, hide_index=True, width="stretch", height=(len(cap_t) + 1) * 35 + 3)
+            brk_t = brokerage_table(summary)
+            brk_t["Brokerage"] = brk_t["Brokerage"].map(inr)
+            p2.dataframe(brk_t, hide_index=True, width="stretch", height=(len(brk_t) + 1) * 35 + 3)
+            with p3:
+                brk = pd.to_numeric(summary["Brokerage"], errors="coerce").fillna(0)
+                fig = go.Figure(go.Bar(x=summary["Month"], y=brk, marker_color=BLUE, text=brk.map(inr), textposition="outside",
+                                       hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
+                fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=380)
+                st.plotly_chart(fig, width="stretch")
 
         # ---- breakdown
         dimensions = [c for c in ("stock", "type") if c in trades]

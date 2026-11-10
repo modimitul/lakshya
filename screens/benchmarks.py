@@ -16,7 +16,7 @@ from core.benchmarks import (
 )
 
 st.title("Benchmarks")
-st.caption("Monthly returns in % for market indices and ETFs. Shared by every owner; used on the Dashboards "
+st.caption("Monthly returns in % for market indices and ETFs. Shared by every owner; used on the Dashboard Reports "
            "to compare each owner's ROI against the market, by calendar or financial year.")
 
 monthly = get_monthly()
@@ -98,4 +98,4 @@ with tab_edit:
             state.bump("bench_grid_version")
             st.rerun()
 
-st.page_link("screens/reports.py", label="Go to Dashboards", icon="📊")
+st.page_link("screens/reports.py", label="Go to Dashboard Reports", icon="📊")

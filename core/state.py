@@ -16,6 +16,22 @@ def users() -> list[dict]:
     return st.session_state["users"]
 
 
+SHARED = "_shared"
+
+
+def default_owner() -> str | None:
+    """Slug of the owner shown first when nobody has signed in; None if unset."""
+    if "default_owner" not in st.session_state:
+        st.session_state["default_owner"] = store.load_json(SHARED, "default_owner", None)
+    slug = st.session_state["default_owner"]
+    return slug if slug in {u["slug"] for u in users()} else None
+
+
+def set_default_owner(slug: str | None) -> None:
+    st.session_state["default_owner"] = slug
+    store.save_json(SHARED, "default_owner", slug)
+
+
 def ensure_default_owner() -> None:
     """With no sign-in screen there must be someone to show: create the fallback owner."""
     if not users():
@@ -42,14 +58,21 @@ def current_user() -> str:
     if not slugs:
         ensure_default_owner()
         slugs = [u["slug"] for u in users()]
-    if st.session_state.get("user") not in slugs:
-        st.session_state["user"] = slugs[0]
-    return st.session_state["user"]
+    user = st.session_state.get("user")
+    if user not in slugs:
+        user = st.session_state.get("signed_in_as") if st.session_state.get("signed_in_as") in slugs else None
+        user = user or default_owner() or slugs[0]
+    return user
 
 
 def user_name(slug: str | None = None) -> str:
     slug = slug or current_user()
-    return next((u["name"] for u in users() if u["slug"] == slug), slug)
+    name = next((u["name"] for u in users() if u["slug"] == slug), None)
+    if name is None:
+        # Another session (or process) may have added or renamed owners: refresh from the database.
+        st.session_state["users"] = store.load_users()
+        name = next((u["name"] for u in users() if u["slug"] == slug), slug)
+    return name
 
 
 def _cache(slug: str) -> dict:

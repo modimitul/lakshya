@@ -249,4 +249,4 @@ else:
 st.divider()
 st.caption("Market benchmarks (Nifty, NASDAQ, Gold BeES …) are entered once for everyone on the **Benchmarks** screen.")
 st.page_link("screens/benchmarks.py", label="Go to Benchmarks", icon="📈")
-st.page_link("screens/reports.py", label="Go to Dashboards", icon="📊")
+st.page_link("screens/reports.py", label="Go to Dashboard Reports", icon="📊")

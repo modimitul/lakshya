@@ -166,4 +166,4 @@ if entries is not None and not entries.empty:
 else:
     st.info("No holdings yet for this owner. Upload a file or add entries with the form.")
 
-st.page_link("screens/reports.py", label="Go to Dashboards", icon="📊")
+st.page_link("screens/reports.py", label="Go to Dashboard Reports", icon="📊")

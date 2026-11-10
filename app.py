@@ -37,7 +37,7 @@ def login_gate() -> None:
             slug = state.sign_in(username)
             st.session_state["authed"] = True
             st.session_state["signed_in_as"] = slug
-            st.session_state["user"] = slug
+            st.session_state.pop("user", None)
             st.rerun()
         else:
             box.error("That password is not correct.")
@@ -50,6 +50,9 @@ if not REQUIRED_PASSWORD:
 
 users = state.users()
 slugs = [u["slug"] for u in users]
+default_slug = state.default_owner()
+initial_owner = state.current_user()  # signed-in user, else the default owner, else the first
+
 
 with st.sidebar:
     signed_in = st.session_state.get("signed_in_as")
@@ -60,7 +63,8 @@ with st.sidebar:
         options=slugs,
         format_func=state.user_name,
         key="user",
-        help="Whose data to show and edit. Defaults to the signed-in user.",
+        help="Whose data to show and edit. Starts on the signed-in user, otherwise on the default owner.",
+        **({} if "user" in st.session_state else {"index": slugs.index(initial_owner)}),
     )
     with st.popover("Rename or add owner", width="stretch"):
         current = state.current_user()
@@ -75,7 +79,14 @@ with st.sidebar:
             else:
                 state.set_users(store.add_user(users, add_name))
                 st.rerun()
-        st.caption("Owners: " + ", ".join(u["name"] for u in users))
+        if current != default_slug and st.button("Make this the default owner", key="sidebar_default",
+                                                 help="The owner shown first when nobody has signed in."):
+            state.set_default_owner(current)
+            st.rerun()
+        st.caption("Owners: " + ", ".join(u["name"] for u in users)
+                   + (f". Default: {state.user_name(default_slug)}." if default_slug else ". No default set."))
+    if default_slug and not signed_in:
+        st.caption(f"Default owner: **{state.user_name(default_slug)}**")
     if signed_in and st.button("Sign out", width="stretch"):
         for key in ("authed", "signed_in_as"):
             st.session_state.pop(key, None)
@@ -85,6 +96,6 @@ home = st.Page("screens/home.py", title="Home", icon=":material/home:", default=
 trading = st.Page("screens/trading_input.py", title="Trading Book", icon=":material/upload_file:")
 portfolio = st.Page("screens/portfolio_input.py", title="Investment Book", icon=":material/account_balance:")
 benchmarks = st.Page("screens/benchmarks.py", title="Benchmarks", icon=":material/show_chart:")
-reports = st.Page("screens/reports.py", title="Dashboards", icon=":material/bar_chart:")
+reports = st.Page("screens/reports.py", title="Dashboard Reports", icon=":material/bar_chart:")
 
 st.navigation([home, trading, portfolio, benchmarks, reports]).run()
