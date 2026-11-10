@@ -12,7 +12,7 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Benchmarks | Monthly % returns of indices/ETFs (Nifty, Nifty BEES, Bank Nifty, NIFTY IT, NASDAQ, DJI, MAFANG, Gold BEES, Silver BEES), shared by all owners; grid or upload; ships with Apr-2022 → Oct-2026 built in |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift; *Record a sale* (month, stock, qty up to what is held, sell price, charges); uploads may carry a SIDE column (BUY/SELL) |
 | Dashboard Reports → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs incl. CAGR; Yearly performance (chart, then table); *My returns vs benchmarks* (default: Gold BEES, Silver BEES, Nifty, Bank Nifty, NIFTY IT, NASDAQ, DJI): total-return table + one bar of Grand Totals, then CAGR table + one bar of Overall CAGR; Monthly performance with its own *Months to show* selector (charts open, table collapsed); Capital and charges (chart open, tables collapsed); breakdown; trade log; Excel download. Charts sit above tables throughout. |
-| Dashboard Reports → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt); *Profit booked on sales* (FIFO cost, profit, ROI, years held, CAGR, per sale and overall); a sub-tab per class with remaining holdings by stock, % Investment, sector allocation, gifts; Excel download |
+| Dashboard Reports → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt, Liquid Fund); *Profit booked on sales* (FIFO cost, profit, ROI, years held, CAGR, per sale and overall); a sub-tab per class with remaining holdings by stock, % Investment, sector allocation, gifts; Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners. Each
 owner's data is saved in a SQL database on the server (SQLite file
@@ -35,7 +35,7 @@ owners can save at the same moment safely.
 | Yearly ROI | Period's Net Profit ÷ Investments × 100, where Investments = average of that period's monthly capital; period = calendar year or financial year (Apr–Mar, labelled e.g. FY 2024-25). Grand Total averages Investments and ROI across periods. |
 | Benchmarks | Monthly % returns kept on the Benchmarks screen. In the comparison, `Z ROI%` and each benchmark are the SUM of monthly values per calendar or financial year, summed over the same months the owner has ROI. Grand Total = sum of listed periods. |
 | % Investment | Stock cost ÷ total cost of the holdings currently shown × 100 (inside a class tab, the class total). |
-| Asset class | From the SECTORS label, then the stock name: ETF/BEES → ETF; MF/MUTUAL/FUND → Equity MF; DEBT/BOND/SGB/GILT/LIQUID/FD/NCD → Debt; otherwise Equity. Adjust per owner under *Asset class rules* on the Investments tab. |
+| Asset class | From the SECTORS label, then the stock name, checked in order: LIQUID/OVERNIGHT/MONEY MARKET/ULTRA SHORT/ARBITRAGE → Liquid Fund; DEBT/BOND/SGB/GILT/FD/NCD → Debt; ETF/BEES → ETF; MF/MUTUAL/FUND → Equity MF; otherwise Equity. Adjust per owner under *Asset class rules* on the Investments tab. |
 
 Rows whose period is not a calendar month (e.g. `YEAR 2026`) are shown under
 "Excluded rows" and left out of monthly totals. Formatted-but-empty Excel rows,
@@ -86,9 +86,12 @@ ask for a Remove button if you need it often.
 ## Importing a workbook with one tab per year
 
 Upload the whole workbook on Trading Book. Tabs that look like trade logs are
-pre-selected; untick pivot or summary tabs. Choose **Replace** (first load) or
-**Add to existing** (later years or corrections); exact duplicate trades are
-skipped, so re-importing a tab is safe. Each row remembers its tab in
+pre-selected; untick pivot or summary tabs. Then choose how to import:
+**Replace only the months covered by the file** (default once data exists:
+existing rows for the months present in the file are removed and the file's
+rows added; other months are untouched, so a corrected 2024 tab replaces only
+2024), **Add to existing** (keeps everything, skips exact duplicates), or
+**Replace ALL** (deletes every trade for this owner first). Each row remembers its tab in
 `source_sheet`. Investment Book works the same way for holdings.
 
 Large workbooks: only the file bytes are kept in memory; tab detection reads

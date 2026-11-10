@@ -688,3 +688,18 @@ def load_capital_frame(raw: pd.DataFrame) -> tuple[pd.DataFrame | None, list[str
     df = df.groupby("month", as_index=False)["Capital"].mean().sort_values("month").reset_index(drop=True)
     df["Capital"] = df["Capital"].astype("Float64")
     return df, []
+
+
+def replace_covered_months(existing: pd.DataFrame | None, incoming: pd.DataFrame) -> tuple[pd.DataFrame, int, list]:
+    """Drop existing rows whose month appears in `incoming`, then append `incoming`.
+
+    Returns (merged, rows_removed, months_replaced). Months not present in the
+    file are left untouched, so re-uploading a corrected year replaces only that year.
+    """
+    months = sorted(pd.to_datetime(incoming["month"]).dropna().unique()) if "month" in incoming else []
+    if existing is None or existing.empty:
+        return incoming.reset_index(drop=True), 0, months
+    covered = existing["month"].isin(months)
+    kept = existing[~covered]
+    merged = pd.concat([kept, incoming], ignore_index=True)
+    return merged, int(covered.sum()), months

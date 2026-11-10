@@ -65,15 +65,26 @@ if mode == "Upload a file":
         if len(sheets) > 1:
             detected = [sh for sh in sheets if looks_like_portfolio_header(wb.headers(sh))]
             chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets, key="portfolio_tabs")
-        how = st.radio("How to import", ["Replace this owner's holdings", "Add to existing holdings (duplicates skipped)"],
-                       horizontal=True, index=0 if entries is None or entries.empty else 1, key="portfolio_how")
+        how = st.radio("How to import",
+                       ["Replace only the months covered by the file", "Add to existing holdings (duplicates skipped)", "Replace ALL of this owner's holdings"],
+                       index=0 if entries is not None and not entries.empty else 2, key="portfolio_how",
+                       help="Replace only the months covered: existing rows for the months present in the file are removed, the file's rows added, "
+                            "other months untouched. Add: keeps everything, skips exact duplicates. Replace ALL: deletes every holding first.")
         if st.button("Import", type="primary", disabled=not chosen, key="portfolio_import"):
             with st.spinner("Importing …"):
                 result = load_portfolio_workbook(wb, chosen)
             show_messages(result)
             if result.ok:
                 incoming = result.entries
-                if how.startswith("Add") and entries is not None and not entries.empty:
+                if how.startswith("Replace only") and entries is not None and not entries.empty:
+                    from core.parse import replace_covered_months
+                    incoming, dropped = dedupe_entries(incoming)
+                    merged, removed, months_replaced = replace_covered_months(entries, incoming)
+                    save_portfolio(merged, f"{state.get_meta().get('portfolio_source', '')} + {upload.name}".strip(" +"))
+                    entries = merged
+                    st.success(f"Replaced {removed:,} existing rows for {len(months_replaced)} month(s) with {len(incoming):,} rows from {upload.name}; "
+                               f"{len(entries):,} rows in total, other months untouched.")
+                elif how.startswith("Add") and entries is not None and not entries.empty:
                     merged, dropped = dedupe_entries(pd.concat([entries, incoming], ignore_index=True))
                     added = len(merged) - len(entries)
                     save_portfolio(merged, f"{state.get_meta().get('portfolio_source', '')} + {upload.name}".strip(" +"))

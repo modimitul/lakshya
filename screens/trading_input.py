@@ -22,6 +22,7 @@ from core.parse import (
     ParseResult,
     dedupe_trades,
     load_capital_frame,
+    replace_covered_months,
     load_trades_workbook,
     looks_like_trade_header,
     template_bytes,
@@ -77,8 +78,12 @@ if mode == "Upload a file":
             detected = [sh for sh in sheets if looks_like_trade_header(wb.headers(sh))]
             chosen = st.multiselect("Tabs to import", sheets, default=detected or sheets,
                                     help="Tabs that look like trade logs are pre-selected. Untick summary or pivot tabs.")
-        how = st.radio("How to import", ["Replace this owner's trades", "Add to existing trades (duplicates skipped)"],
-                       horizontal=True, index=0 if trades is None or trades.empty else 1)
+        how = st.radio("How to import",
+                       ["Replace only the months covered by the file", "Add to existing trades (duplicates skipped)", "Replace ALL of this owner's trades"],
+                       index=0 if trades is not None and not trades.empty else 2,
+                       help="Replace only the months covered: existing rows for the months present in the file are removed and the file's rows "
+                            "added; other months are untouched (use this to re-upload a corrected year). Add: keeps everything, skips exact duplicates. "
+                            "Replace ALL: deletes every trade for this owner first.")
         if st.button("Import", type="primary", disabled=not chosen):
             with st.spinner("Importing …"):
                 result = load_trades_workbook(wb, chosen)
@@ -86,7 +91,17 @@ if mode == "Upload a file":
             if result.ok:
                 incoming = result.trades
                 dropped = 0
-                if how.startswith("Add") and trades is not None and not trades.empty:
+                if how.startswith("Replace only") and trades is not None and not trades.empty:
+                    incoming, dropped = dedupe_trades(incoming)
+                    merged, removed, months_replaced = replace_covered_months(trades, incoming)
+                    old_excluded = state.get_frame("excluded")
+                    excluded = pd.concat([x for x in (old_excluded, result.excluded) if x is not None and not x.empty], ignore_index=True) if (old_excluded is not None and not old_excluded.empty) or not result.excluded.empty else result.excluded
+                    save_trades(merged, excluded, f"{state.get_meta().get('trades_source', '')} + {upload.name}".strip(" +"))
+                    trades = merged
+                    span = (f"{pd.Timestamp(months_replaced[0]):%b-%y} to {pd.Timestamp(months_replaced[-1]):%b-%y}" if months_replaced else "no months")
+                    st.success(f"Replaced {removed:,} existing rows for {len(months_replaced)} month(s) ({span}) with {len(incoming):,} rows from {upload.name}. "
+                               f"{len(trades):,} trades across {len(months_in(trades))} months in total; other months untouched.")
+                elif how.startswith("Add") and trades is not None and not trades.empty:
                     merged, dropped = dedupe_trades(pd.concat([trades, incoming], ignore_index=True))
                     added = len(merged) - len(trades)
                     old_excluded = state.get_frame("excluded")

@@ -30,7 +30,8 @@ SELL_WORDS = {"sell", "sold", "sale", "s", "redeem", "redemption", "exit"}
 
 COMMON_SECTORS = [
     "BANKS", "NBFC", "IT", "PHARMA", "CHEMICALS", "FMCG", "RETAIL", "AUTO", "CEMENT",
-    "ENERGY", "METALS", "INFRA", "REALTY", "TELECOM", "INSURANCE", "CONSUMER", "ETF", "OTHER",
+    "ENERGY", "METALS", "INFRA", "REALTY", "TELECOM", "INSURANCE", "CONSUMER",
+    "ETF", "MUTUAL FUND", "DEBT FUND", "LIQUID FUND", "OTHER",
 ]
 
 
@@ -360,11 +361,14 @@ def load_portfolio_multi(file, filename: str, sheets: list) -> PortfolioResult:
 # ---------------------------------------------------------- asset classes --
 import re as _re
 
-ASSET_CLASSES = ["Equity", "ETF", "Equity MF", "Debt"]
+ASSET_CLASSES = ["Equity", "ETF", "Equity MF", "Debt", "Liquid Fund"]
+# Patterns are checked in this order, so "LIQUID FUND" lands in Liquid Fund (not Equity MF),
+# "DEBT FUND" in Debt, and "GOLD BEES" in ETF.
 _CLASS_PATTERNS = {
+    "Liquid Fund": _re.compile(r"LIQUID|OVERNIGHT|MONEY MARKET|ULTRA SHORT|ARBITRAGE"),
+    "Debt": _re.compile(r"\bDEBT\b|\bBOND\b|\bBONDS\b|\bFD\b|\bNCD\b|\bGILT\b|\bSGB\b|G-SEC|GSEC|TREASURY|\bRBI\b"),
     "ETF": _re.compile(r"\bETF\b|\bETFS\b|BEES\b"),
     "Equity MF": _re.compile(r"\bMF\b|\bMFS\b|MUTUAL|\bFUND\b|\bFUNDS\b|DIRECT PLAN|GROWTH PLAN"),
-    "Debt": _re.compile(r"\bDEBT\b|\bBOND\b|\bBONDS\b|\bFD\b|\bNCD\b|\bGILT\b|\bSGB\b|G-SEC|GSEC|LIQUID|TREASURY|\bRBI\b"),
 }
 
 

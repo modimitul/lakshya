@@ -438,3 +438,31 @@ def test_trading_cagr_kpi_and_benchmark_cagr_table():
     assert cg.loc["Overall", "Months"] == 2
     assert cg.loc["Overall", "Z ROI%"] == pytest.approx((1.02 ** 12 - 1) * 100)
     assert cg.loc["Overall", "Nifty ROI"] == pytest.approx(((1.0746 * (1 - 0.0187)) ** 6 - 1) * 100, rel=1e-3)
+
+
+def test_replace_only_covered_months():
+    from core.parse import replace_covered_months
+    existing = pd.DataFrame({"month": pd.to_datetime(["2024-04-01", "2024-05-01", "2025-04-01"]), "stock": ["A", "B", "C"], "gross_profit": [1.0, 2.0, 3.0]})
+    incoming = pd.DataFrame({"month": pd.to_datetime(["2024-04-01", "2024-04-01"]), "stock": ["A2", "A3"], "gross_profit": [10.0, 11.0]})
+    merged, removed, months = replace_covered_months(existing, incoming)
+    assert removed == 1 and months == [pd.Timestamp("2024-04-01")]
+    assert sorted(merged["stock"]) == ["A2", "A3", "B", "C"]          # Apr-24 replaced; May-24 and Apr-25 kept
+    merged2, removed2, _ = replace_covered_months(None, incoming)
+    assert removed2 == 0 and len(merged2) == 2
+
+
+def test_liquid_fund_asset_class_and_fund_sectors():
+    from core.portfolio import clean_portfolio, with_asset_class, asset_class_summary, COMMON_SECTORS
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23"] * 4,
+        "SECTORS": ["LIQUID FUND", "DEBT FUND", "MUTUAL FUND", "ETF"],
+        "STOCK": ["PARAG PARIKH LIQUID", "HDFC CORPORATE BOND FUND", "PARAG PARIKH FLEXI CAP", "NIFTYBEES"],
+        "QTY": [1] * 4, "BUY": [100, 200, 300, 400],
+    })
+    classified = with_asset_class(clean_portfolio(raw).entries)
+    assert classified.set_index("sector")["asset_class"].to_dict() == {
+        "LIQUID FUND": "Liquid Fund", "DEBT FUND": "Debt", "MUTUAL FUND": "Equity MF", "ETF": "ETF",
+    }
+    assert asset_class_summary(classified)["Asset class"].tolist() == ["ETF", "Equity MF", "Debt", "Liquid Fund"]
+    for sector in ("MUTUAL FUND", "DEBT FUND", "LIQUID FUND", "ETF"):
+        assert sector in COMMON_SECTORS

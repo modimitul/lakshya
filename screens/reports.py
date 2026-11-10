@@ -339,13 +339,13 @@ with invest_tab:
         view = filter_entries(classified, year_pick, sector_pick, month_pick)
         sales_view = filter_entries(sales_all, year_pick, sector_pick, month_pick) if not sales_all.empty else sales_all
 
-        with st.expander("Asset class rules (which sectors count as ETF, Equity MF or Debt)"):
+        with st.expander("Asset class rules (which sectors count as ETF, Equity MF, Debt or Liquid Fund)"):
             st.caption("Everything not listed here is Equity. Rules are saved for this owner; new sectors are "
                        "classified automatically from their name until you change them here.")
             current_map = sector_class_map(classified_all, overrides)
             all_sectors = sorted(current_map)
             picks = {}
-            cols = st.columns(3)
+            cols = st.columns(len(ASSET_CLASSES) - 1)
             for col, cls in zip(cols, ASSET_CLASSES[1:]):
                 picks[cls] = col.multiselect(cls, all_sectors, default=[s for s in all_sectors if current_map[s] == cls],
                                              key=f"class_pick_{cls}")
