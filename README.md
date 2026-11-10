@@ -8,7 +8,7 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Screen | What it does |
 |---|---|
 | Home | Status card per owner, owner names, how the numbers are calculated |
-| Trading Book | Trades by upload or an *Add trade* form; monthly capital |
+| Trading Book | Trades by upload or an adaptive *Add trade* form (pick the Type first; Brokerages needs only date, description, amount; strike mandatory for option strategies); strategy guide; monthly capital |
 | Benchmarks | Monthly % returns of indices/ETFs (Nifty, Nifty BEES, Bank Nifty, NIFTY IT, NASDAQ, DJI, MAFANG, Gold BEES, Silver BEES), shared by all owners; grid or upload; ships with Apr-2022 → Oct-2026 built in |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
 | Dashboard Reports → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs; Yearly performance (chart, then table); *My returns vs benchmarks* (default: Gold BEES, Silver BEES, Nifty, Bank Nifty, NIFTY IT, NASDAQ, DJI; charts, then table); Monthly performance with its own *Months to show* selector (charts open, table collapsed); Capital and charges (chart open, tables collapsed); breakdown; trade log; Excel download. Charts sit above tables throughout. |
@@ -26,7 +26,8 @@ owners can save at the same moment safely.
 | Net Profit | Sum of each trade's `Gross Profit` for the month (P&L minus brokerage and charges). Derived from Qty × (Sell − Buy) − charges if the file lacks it. |
 | Average of Capital | Entered per month on the Trading Book screen (or the per-month mean of a `Capital` column). Grand Total = average of months. |
 | Brokerage | Sum of `Brokerage & Other Charges` per month. Grand Total = sum. |
-| Charge entries | Rows whose Strike Price reads BROKERAGE / …CHARGES (or with Buy = Sell = P/L = 0 and charges > 0) are costs, not trades: they count in Net Profit and Brokerage but not in trade counts or win rate. Rows labelled FUTURE / EQUITY / MF with real prices remain trades. |
+| Charge entries | Rows whose Strike Price reads BROKERAGE / …CHARGES (or with Buy = Sell = P/L = 0 and charges > 0) become Type = **Brokerages** with the strike cleared (the label is kept in `strike_label`). They count in Net Profit and Brokerage but not in trade counts or win rate. Rows labelled FUTURE / EQUITY / MF with real prices remain trades. |
+| Types | The Type column is matched case-insensitively to the strategy catalogue in `core/strategies.py` (Naked Put Sell, Iron Condor, FUTURE Long, Long Build Up, Brokerages …), each with a definition and Bull/Bear/Neutral bias shown in the form, the Strategy guide and the breakdown by Type. Strike Price is mandatory in the form for option strategies and not applicable to Brokerages, Equity, Debt, Futures and OI types. |
 | Win rate | Trades with positive gross profit ÷ trades, excluding charge entries. |
 | Monthly ROI | Net Profit ÷ Average of Capital × 100. The monthly Grand Total and the comparison's `Z ROI%` = sum of monthly ROI. |
 | Yearly ROI | Period's Net Profit ÷ Investments × 100, where Investments = average of that period's monthly capital; period = calendar year or financial year (Apr–Mar, labelled e.g. FY 2024-25). Grand Total averages Investments and ROI across periods. |
@@ -212,7 +213,8 @@ screens/trading_input.py    Trading Book: trades (upload / form), monthly capita
 screens/portfolio_input.py  Investment Book: long-term holdings (upload / form)
 screens/benchmarks.py       Benchmarks: shared monthly index returns (grid / upload / reset)
 screens/reports.py          Dashboard Reports: Trading and Investments tabs
-core/parse.py               header matching, type coercion, derived trade columns, templates
+core/parse.py               header matching, type coercion, derived trade columns, charge detection, templates
+core/strategies.py          strategy catalogue: definitions, bias, strike requirement
 core/portfolio.py           portfolio parsing, holdings, sector allocation
 core/benchmarks.py          monthly benchmark store, FY/CY period labels, comparison tables
 core/seed/benchmarks_monthly.csv  built-in monthly returns Apr-2022 → Oct-2026

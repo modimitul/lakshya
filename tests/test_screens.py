@@ -47,8 +47,24 @@ def test_trading_manual_form_adds_a_trade():
     by_label(at.number_input, "Buy price").set_value(52.13)
     by_label(at.number_input, "Sell price").set_value(58.88)
     by_label(at.button, "Add trade").click().run()
+    assert any("Strike price is required" in e.value for e in at.error)       # mandatory for option strategies
+    by_label(at.text_input, "Stock").set_value("TCS")
+    by_label(at.number_input, "Strike price *").set_value(3400)
+    by_label(at.number_input, "Qty").set_value(175)
+    by_label(at.number_input, "Buy price").set_value(52.13)
+    by_label(at.number_input, "Sell price").set_value(58.88)
+    by_label(at.button, "Add trade").click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert any("Added TCS" in s.value for s in at.success)
+    # a Brokerages entry needs only the amount
+    by_label(at.selectbox, "Type").set_value("Brokerages").run()
+    by_label(at.number_input, "Brokerage & other charges (₹)").set_value(240.82)
+    by_label(at.button, "Add charge entry").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Added charge entry" in s.value for s in at.success)
+    from core import store
+    saved = store.load_frame("owner", "trades")
+    assert saved["type"].tolist() == ["Naked Call Sell", "Brokerages"] and saved["entry_kind"].tolist() == ["trade", "charge"]
 
 
 def test_portfolio_manual_form_adds_an_entry():

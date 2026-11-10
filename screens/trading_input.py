@@ -8,8 +8,17 @@ import streamlit as st
 from core import state
 from core.formatting import inr
 from core.metrics import capital_frame, monthly_summary, months_in
+from core.strategies import (
+    CHARGE_TYPE,
+    OTHER_TYPE,
+    STRATEGIES,
+    bias,
+    definition,
+    requires_strike,
+    strategies_frame,
+    strategy_names,
+)
 from core.parse import (
-    COMMON_TRADE_TYPES,
     ParseResult,
     dedupe_trades,
     load_capital_frame,
@@ -56,8 +65,9 @@ if mode == "Upload a file":
         upload = st.file_uploader(
             "Trade log (.xlsx, .xlsm, .xls, .csv). A workbook with one tab per year is fine: pick the tabs below.",
             type=["xlsx", "xlsm", "xls", "csv"],
-            help="Headers are matched by name, so extra columns are fine. Needed per tab: Month or Buy Date, "
-                 "and Gross Profit (or Profit/Loss, or Qty + Buy + Sell).",
+            help="Headers are matched by name, so extra columns are fine. Needed per tab: Month or Buy Date, Stock, "
+                 "Strike Price for option trades, Type, and Gross Profit (or Profit/Loss, or Qty + Buy + Sell). "
+                 "Rows with BROKERAGE / …CHARGES in Strike Price become Type = Brokerages.",
         )
     wb = state.cached_workbook(upload, "trade_wb") if upload is not None else None
     if wb:
@@ -100,40 +110,66 @@ if mode == "Upload a file":
                     with st.expander(f"Excluded rows ({len(result.excluded)})"):
                         st.dataframe(result.excluded, width="stretch", hide_index=True)
 else:
-    st.caption("Fill in one trade and press **Add trade**. P&L, gross profit, investment and ROI are calculated for you.")
+    st.caption("Pick the type first; the form adapts. P&L, gross profit, investment and ROI are calculated for you.")
+    t1, t2 = st.columns([1, 2])
+    trade_type = t1.selectbox("Type", strategy_names() + [OTHER_TYPE], key="manual_type")
+    other_type = ""
+    if trade_type == OTHER_TYPE:
+        other_type = t1.text_input("Type name", placeholder="e.g. Jade Lizard", key="manual_other_type")
+    desc = definition(trade_type)
+    bias_txt = bias(trade_type)
+    if desc or bias_txt:
+        t2.markdown(f"**{trade_type}**  \n{desc}" + (f"  \nBias: {bias_txt}" if bias_txt else ""))
+    is_charge = trade_type == CHARGE_TYPE
+    needs_strike = requires_strike(trade_type) if trade_type != OTHER_TYPE else False
+
     with st.form("add_trade", clear_on_submit=True, border=True):
-        a, b, c = st.columns(3)
-        buy_date = a.date_input("Buy date", value=dt.date.today(), format="DD-MM-YYYY")
-        stock = b.text_input("Stock", placeholder="e.g. TCS").strip().upper()
-        trade_type = c.selectbox("Type", COMMON_TRADE_TYPES + ["Other"])
-        other_type = c.text_input("If Other, type it here", placeholder="e.g. Iron Condor")
-        a, b, c = st.columns(3)
-        qty = a.number_input("Qty", min_value=0, step=1, value=0)
-        buy = b.number_input("Buy price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
-        sell = c.number_input("Sell price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
-        a, b, c, d = st.columns(4)
-        sale_date = a.date_input("Sale date (optional)", value=None, format="DD-MM-YYYY")
-        brokerage = b.number_input("Brokerage & charges", min_value=0.0, step=1.0, value=0.0, format="%.2f")
-        margin = c.number_input("Margin per lot", min_value=0, step=1000, value=0)
-        lot = d.number_input("Lots", min_value=0, step=1, value=1)
-        strike = st.number_input("Strike price (optional)", min_value=0.0, step=50.0, value=0.0)
-        submitted = st.form_submit_button("Add trade", type="primary")
+        if is_charge:
+            a, b, c = st.columns(3)
+            buy_date = a.date_input("Date", value=dt.date.today(), format="DD-MM-YYYY")
+            stock = b.text_input("Description", value="BROKERAGE", help="e.g. BROKERAGE, DP CHARGES, AMC CHARGES").strip().upper()
+            brokerage = c.number_input("Brokerage & other charges (₹)", min_value=0.0, step=1.0, value=0.0, format="%.2f")
+            qty, buy, sell, sale_date, margin, lot, strike = 1, 0.0, 0.0, None, 0, 1, 0.0
+        else:
+            a, b, c = st.columns(3)
+            buy_date = a.date_input("Buy date", value=dt.date.today(), format="DD-MM-YYYY")
+            stock = b.text_input("Stock", placeholder="e.g. TCS").strip().upper()
+            strike = c.number_input("Strike price" + (" *" if needs_strike else " (optional)"), min_value=0.0, step=50.0, value=0.0,
+                                    help="Required for option strategies." if needs_strike else "Not applicable to this type; leave 0.")
+            a, b, c = st.columns(3)
+            qty = a.number_input("Qty", min_value=0, step=1, value=0)
+            buy = b.number_input("Buy price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
+            sell = c.number_input("Sell price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
+            a, b, c, d = st.columns(4)
+            sale_date = a.date_input("Sale date (optional)", value=None, format="DD-MM-YYYY")
+            brokerage = b.number_input("Brokerage & charges", min_value=0.0, step=1.0, value=0.0, format="%.2f")
+            margin = c.number_input("Margin per lot", min_value=0, step=1000, value=0)
+            lot = d.number_input("Lots", min_value=0, step=1, value=1)
+        submitted = st.form_submit_button("Add charge entry" if is_charge else "Add trade", type="primary")
 
     if submitted:
         problems = []
-        if not stock:
-            problems.append("Stock is required.")
-        if qty <= 0:
-            problems.append("Qty must be greater than 0.")
-        if buy <= 0 and sell <= 0:
-            problems.append("Enter a buy and a sell price.")
+        if is_charge:
+            if brokerage <= 0:
+                problems.append("Enter the charge amount.")
+        else:
+            if not stock:
+                problems.append("Stock is required.")
+            if qty <= 0:
+                problems.append("Qty must be greater than 0.")
+            if buy <= 0 and sell <= 0:
+                problems.append("Enter a buy and a sell price.")
+            if needs_strike and strike <= 0:
+                problems.append(f"Strike price is required for {trade_type}.")
+            if trade_type == OTHER_TYPE and not other_type.strip():
+                problems.append("Type the strategy name next to 'Other'.")
         if problems:
-            for p in problems:
-                st.error(p)
+            for p_ in problems:
+                st.error(p_)
         else:
             result = trade_from_form(
-                buy_date=buy_date, stock=stock,
-                type=other_type.strip() if trade_type == "Other" and other_type.strip() else trade_type,
+                buy_date=buy_date, stock=stock or "BROKERAGE",
+                type=other_type.strip() if trade_type == OTHER_TYPE else trade_type,
                 strike=strike or None, qty=qty, buy=buy, sale_date=sale_date, sell=sell,
                 brokerage=brokerage, margin=margin or None, lot=lot or None,
             )
@@ -143,13 +179,19 @@ else:
                 save_trades(combined, state.get_frame("excluded"), "manual entry")
                 trades = combined
                 row = result.trades.iloc[0]
-                st.success(f"Added {stock}: gross profit {inr(row['gross_profit'], prefix='₹')}"
-                           + (f", ROI {row['roi']:.2f}%" if pd.notna(row.get("roi")) else ""))
+                if is_charge:
+                    st.success(f"Added charge entry {stock or 'BROKERAGE'}: {inr(brokerage, prefix='₹')} (counts against net profit, not as a trade).")
+                else:
+                    st.success(f"Added {stock}: gross profit {inr(row['gross_profit'], prefix='₹')}"
+                               + (f", ROI {row['roi']:.2f}%" if pd.notna(row.get("roi")) else ""))
+
+    with st.expander("Strategy guide"):
+        st.dataframe(strategies_frame(), hide_index=True, width="stretch", height=min(len(STRATEGIES) + 1, 20) * 35 + 3)
 
 # Review / delete list
 if trades is not None and not trades.empty:
     with st.expander(f"Trades saved for {owner} ({len(trades):,})", expanded=(mode == "Add trades manually")):
-        show_cols = [c for c in ("buy_date", "month", "stock", "type", "qty", "buy", "sell", "brokerage", "gross_profit", "roi") if c in trades]
+        show_cols = [c for c in ("buy_date", "month", "stock", "type", "strike", "qty", "buy", "sell", "brokerage", "gross_profit", "roi") if c in trades]
         view = trades[show_cols].copy()
         for col in ("buy_date", "month"):
             if col in view:
@@ -160,6 +202,7 @@ if trades is not None and not trades.empty:
             disabled=show_cols, key=f"trade_list_{state.version('capital_version')}",
             column_config={"Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
                            "buy_date": "Buy date", "month": "Month", "stock": "Stock", "type": "Type", "qty": "Qty",
+                           "strike": st.column_config.NumberColumn("Strike", format="%.0f"),
                            "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
                            "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
                            "brokerage": st.column_config.NumberColumn("Brokerage", format="%.2f"),

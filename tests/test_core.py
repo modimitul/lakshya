@@ -394,8 +394,11 @@ def test_charge_entries_are_not_trades_but_still_cost_money():
     assert summary["Net Profit"].iat[0] == pytest.approx(t["gross_profit"].sum())      # charges still cost money
     k = kpis(summary, t)
     assert k["win_rate"] == pytest.approx(2 / 3 * 100) and k["trades"] == 3 and k["charges"] == 2
+    assert t["type"].tolist() == ["Naked Put Sell", "Brokerages", "Brokerages", "FUTURE Long", "Naked Put Sell"]
+    assert pd.isna(t["strike"].iloc[1]) and pd.isna(t["strike"].iloc[2])      # strike cleared on charge rows
     by_type = breakdown(t, "type").set_index("Type")
-    assert by_type.loc["Equity", "Trades"] == 0 and by_type.loc["Equity", "Net Profit"] < 0
+    assert by_type.loc["Brokerages", "Trades"] == 0 and by_type.loc["Brokerages", "Net Profit"] < 0
+    assert by_type.loc["Naked Put Sell", "Bias"] == "🐂 Bull"
     # data saved before entry_kind existed is classified structurally
     legacy = t.drop(columns=["entry_kind", "strike_label"])
     assert charge_mask(legacy).tolist() == [False, True, True, False, False]

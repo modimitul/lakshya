@@ -60,10 +60,9 @@ MANUAL_COLUMNS: dict[str, str] = {
     "lot": "Lot",
 }
 
-COMMON_TRADE_TYPES = [
-    "Naked Put Sell", "Naked Call Sell", "Short Strangle", "Short Straddle",
-    "Bull Put Spread", "FUTURE Long", "Naked Put Buy", "Equity",
-]
+from .strategies import CHARGE_TYPE, canonical as canonical_type, strategy_names  # noqa: E402
+
+COMMON_TRADE_TYPES = strategy_names()
 
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm", ".xls")
 
@@ -386,8 +385,15 @@ def clean(raw: pd.DataFrame) -> ParseResult:
         label_hit = df["strike_label"].fillna("").str.contains(CHARGE_PATTERN, regex=True) if "strike_label" in df else pd.Series(False, index=df.index)
         zero = lambda c: (df[c].fillna(0) == 0) if c in df else pd.Series(True, index=df.index)
         structural = zero("pl") & zero("buy") & zero("sell") & (df["brokerage"].fillna(0) > 0 if "brokerage" in df else False)
-        df.loc[label_hit | structural, "entry_kind"] = "charge"
-        n_charges = int((df["entry_kind"] == "charge").sum())
+        charge = label_hit | structural
+        df.loc[charge, "entry_kind"] = "charge"
+        if "type" not in df:
+            df["type"] = pd.Series([pd.NA] * len(df), index=df.index, dtype="string")
+        df["type"] = df["type"].astype("string").map(lambda v: canonical_type(v) if pd.notna(v) else v)
+        df.loc[charge, "type"] = CHARGE_TYPE
+        if "strike" in df:
+            df.loc[charge, "strike"] = pd.NA
+        n_charges = int(charge.sum())
         if n_charges:
             result.notes.append(f"{n_charges} rows are charge entries (brokerage, DP/AMC charges …): counted in net profit, not as trades.")
 
@@ -499,13 +505,28 @@ def template_bytes() -> bytes:
     headers = ["Buy Date", "Month", "STOCK", "Strike Price", "TYPE", "QTY", "Buy", "Sale Date", "Sell",
                "Brokerage & Other Charges", "Margin", "Lot"]
     example = ["2026-04-06", "2026-04-01", "TCS", 3400, "Naked Put Sell", 175, 52.13, "2026-04-24", 58.88, 48.5, 48000, 1]
+    from .strategies import strategies_frame
+
     frame = pd.DataFrame([example], columns=headers)
+    instructions = pd.DataFrame({
+        "Column": headers,
+        "Required": ["Yes", "Yes (or Buy Date)", "Yes", "Yes for option strategies; leave blank for Brokerages, Equity, Debt, Futures and OI types",
+                     "Yes: a name from the Strategies sheet, or Brokerages for a charge entry", "Yes", "Yes", "Optional", "Yes",
+                     "Optional (for Brokerages rows: the charge amount)", "Optional (used for ROI = P&L ÷ Margin × Lots)", "Optional"],
+        "Notes": ["Date of entry", "First day of the month to report under", "Underlying / scrip, e.g. TCS", "Numeric strike",
+                  "Strategy name", "Quantity", "Buy price", "Date of exit", "Sell price",
+                  "Brokerage & other charges", "Margin per lot", "Number of lots"],
+    })
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         frame.to_excel(writer, index=False, sheet_name="Trades")
-        ws = writer.sheets["Trades"]
-        for idx, col in enumerate(headers, start=1):
-            ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(12, len(col) + 2)
+        instructions.to_excel(writer, index=False, sheet_name="Instructions")
+        strategies_frame().to_excel(writer, index=False, sheet_name="Strategies")
+        for name, widths in (("Trades", None), ("Instructions", [28, 60, 40]), ("Strategies", [30, 90, 36])):
+            ws = writer.sheets[name]
+            cols = list(frame.columns) if name == "Trades" else (list(instructions.columns) if name == "Instructions" else ["a", "b", "c"])
+            for idx, col in enumerate(cols, start=1):
+                ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (widths[idx - 1] if widths else max(12, len(str(col)) + 2))
     return buffer.getvalue()
 
 

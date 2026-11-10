@@ -124,7 +124,11 @@ def breakdown(trades: pd.DataFrame, by: str) -> pd.DataFrame:
     out["Trades"] = out["Trades"].fillna(0).astype(int)
     if "roi" in trades:
         out["Avg trade ROI"] = real["roi"].mean()
-    return out.sort_values("Net Profit", ascending=False).reset_index().rename(columns={by: by.title()})
+    out = out.sort_values("Net Profit", ascending=False).reset_index().rename(columns={by: by.title()})
+    if by == "type":
+        from .strategies import bias
+        out.insert(1, "Bias", out["Type"].map(bias))
+    return out
 
 
 def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
