@@ -320,6 +320,11 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
 
 
 with invest_tab:
+    from core.sips import run_autopost
+
+    posted = run_autopost()
+    if posted:
+        st.success(f"SIP auto-post: added {posted} instalment(s) that fell due (plans are managed on Investment Book).")
     entries = state.get_frame("portfolio")
     if entries is None or entries.empty:
         st.info("No long-term holdings loaded for this owner yet.")

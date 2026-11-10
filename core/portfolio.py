@@ -137,16 +137,22 @@ def _years_between(a: pd.Timestamp, b: pd.Timestamp) -> float:
     return max(months, 1) / 12.0
 
 
-def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def match_sales(entries: pd.DataFrame, with_lineage: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """FIFO-match sell rows against buy rows of the same stock.
 
     Returns (remaining, sales):
       remaining: buy rows with qty/cost reduced to what is still held (fully sold lots dropped)
       sales: one row per sale with cost basis, profit, ROI %, cost-weighted holding years and CAGR %
+    With with_lineage=True, remaining also carries src_index (the row's index label in `entries`),
+    sold_qty and sold_cost, so corrections can be written back to the original lot.
     """
     if entries.empty or "side" not in entries:
         out = entries.copy()
-        return out, pd.DataFrame()
+        if with_lineage and not out.empty:
+            out["src_index"] = out.index
+            out["sold_qty"] = 0.0
+            out["sold_cost"] = 0.0
+        return out.reset_index(drop=True) if with_lineage else out, pd.DataFrame()
     buys = entries[entries["side"] != "sell"].copy()
     sells = entries[entries["side"] == "sell"].copy()
     qty_num = pd.to_numeric(buys["qty"], errors="coerce") if "qty" in buys else pd.Series(float("nan"), index=buys.index)
@@ -197,6 +203,11 @@ def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     keep = (~buys["_matchable"]) | (buys["qty_left"] > 0)
     remaining = buys[keep].copy()
     touched = remaining["_matchable"]
+    if with_lineage:
+        remaining["src_index"] = remaining.index
+        orig_qty = pd.to_numeric(remaining["qty"], errors="coerce")
+        remaining["sold_qty"] = (orig_qty - remaining["qty_left"]).where(touched, 0.0).fillna(0.0)
+        remaining["sold_cost"] = remaining["_consumed_cost"].fillna(0.0)
     remaining.loc[touched, "qty"] = remaining.loc[touched, "qty_left"]
     # Reduce cost by what the sales consumed; an untouched lot keeps its original cost
     # exactly (including lots whose cost or buy price is blank).

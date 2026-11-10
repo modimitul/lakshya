@@ -66,13 +66,13 @@ with st.sidebar:
         help="Whose data to show and edit. Starts on the signed-in user, otherwise on the default owner.",
         **({} if "user" in st.session_state else {"index": slugs.index(initial_owner)}),
     )
-    with st.popover("Rename or add owner", width="stretch"):
+    with st.popover("Manage owners (rename · add · default)", width="stretch"):
         current = state.current_user()
         new_name = st.text_input("Rename selected owner", value=state.user_name(current), key="sidebar_rename")
         if st.button("Save name", key="sidebar_save") and new_name.strip() and new_name.strip() != state.user_name(current):
             state.set_users(store.rename_user(users, current, new_name))
             st.rerun()
-        add_name = st.text_input("Add another owner", placeholder="Name", key="sidebar_add")
+        add_name = st.text_input("Add another owner (no limit)", placeholder="Name", key="sidebar_add")
         if st.button("Add owner", key="sidebar_add_btn") and add_name.strip():
             if store.find_user(users, add_name):
                 st.warning("An owner with that name already exists.")
@@ -83,7 +83,8 @@ with st.sidebar:
                                                  help="The owner shown first when nobody has signed in."):
             state.set_default_owner(current)
             st.rerun()
-        st.caption("Owners: " + ", ".join(u["name"] for u in users)
+        st.caption("There is no limit on owners; signing in with a new username also creates one. "
+                   "Owners: " + ", ".join(u["name"] for u in users)
                    + (f". Default: {state.user_name(default_slug)}." if default_slug else ". No default set."))
     if default_slug and not signed_in:
         st.caption(f"Default owner: **{state.user_name(default_slug)}**")

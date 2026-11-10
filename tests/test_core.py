@@ -561,3 +561,55 @@ def test_match_sales_keeps_buys_without_quantity():
     assert "TCS" in held.index and held.loc["TCS", "cost"] == 500000     # no qty → still a holding
     assert "DMART" not in held.index                                     # fully sold
     assert sales.iloc[0]["cost"] == pytest.approx(300000)
+
+
+# --------------------------------------------------------------------- SIPs ----
+def test_sip_autopost_due_months_and_idempotency():
+    import datetime as dt
+    from core.sips import empty_sips, apply_due, next_due, normalise_sips
+    sips = empty_sips()
+    sips.loc[0] = ["Parag Parikh Flexi Cap Fund", None, 10000, 23, pd.Timestamp("2026-09-01"), 1, pd.NaT]
+    sips.loc[1] = ["Paused Fund", None, 5000, 1, pd.Timestamp("2026-01-01"), 0, pd.NaT]
+    today = dt.date(2026, 11, 10)
+    rows, updated, n = apply_due(sips, today)
+    assert n == 2                                                   # Sep + Oct; Nov waits for the 23rd
+    assert rows["month"].tolist() == [pd.Timestamp("2026-09-01"), pd.Timestamp("2026-10-01")]
+    assert rows.iloc[0]["stock"] == "PARAG PARIKH FLEXI CAP FUND"
+    assert rows.iloc[0]["sector"] == "MUTUAL FUND" and rows.iloc[0]["cost"] == 10000
+    assert rows.iloc[0]["side"] == "buy" and rows.iloc[0]["source_sheet"] == "SIP"
+    assert pd.isna(rows.iloc[0]["qty"])                             # NAV unknown
+    _, _, n2 = apply_due(updated, today)
+    assert n2 == 0                                                  # idempotent
+    rows3, _, n3 = apply_due(updated, dt.date(2026, 11, 24))
+    assert n3 == 1 and rows3.iloc[0]["month"] == pd.Timestamp("2026-11-01")
+    plan = normalise_sips(updated).iloc[0]
+    assert next_due(plan, today) == dt.date(2026, 11, 23)
+
+
+def test_sip_entries_flow_into_portfolio_and_classify_as_equity_mf():
+    import datetime as dt
+    from core.sips import empty_sips, apply_due
+    from core.portfolio import with_asset_class
+    sips = empty_sips()
+    sips.loc[0] = ["HDFC Innovation Fund", None, 5000, 23, pd.Timestamp("2026-10-01"), 1, pd.NaT]
+    rows, _, n = apply_due(sips, dt.date(2026, 11, 10))
+    assert n == 1
+    classified = with_asset_class(rows)
+    assert classified.iloc[0]["asset_class"] == "Equity MF"
+
+
+def test_remaining_correction_write_back_preserves_sold_portion():
+    from core.portfolio import clean_portfolio, match_sales
+    raw = pd.DataFrame({"MONTH": ["Jan-22", "Mar-26"], "SECTORS": ["RETAIL", "RETAIL"], "STOCK": ["DMART", "DMART"],
+                        "QTY": [100, 20], "BUY": [3000, 4000], "SIDE": ["BUY", "SELL"], "CHARGES": [None, 0]})
+    entries = clean_portfolio(raw).entries
+    rem, _ = match_sales(entries, with_lineage=True)
+    lot = rem.iloc[0]
+    assert lot["qty"] == 80 and lot["sold_qty"] == 20 and lot["sold_cost"] == 60000
+    # correct the holding down to 50 (e.g. 30 were wrongly on file)
+    src = lot["src_index"]
+    entries.at[src, "qty"] = lot["sold_qty"] + 50
+    entries.at[src, "cost"] = lot["sold_cost"] + 50 * 3000
+    rem2, sales2 = match_sales(entries, with_lineage=True)
+    assert rem2.iloc[0]["qty"] == 50 and rem2.iloc[0]["cost"] == 150000
+    assert sales2.iloc[0]["profit"] == pytest.approx(20 * (4000 - 3000))   # past sale unchanged

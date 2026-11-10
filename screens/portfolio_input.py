@@ -7,7 +7,8 @@ import streamlit as st
 
 from core import state
 from core.formatting import inr
-from core.parse import apply_grid_edits
+from core.parse import apply_grid_edits, cell_changed
+from core.sips import SIP_SOURCE, empty_sips, next_due, normalise_sips, run_autopost
 from core.portfolio import (
     COMMON_SECTORS,
     PortfolioResult,
@@ -56,6 +57,9 @@ def save_portfolio(entries: pd.DataFrame | None, source: str) -> None:
     state.bump("portfolio_version")
 
 
+posted = run_autopost()
+if posted:
+    st.success(f"SIP auto-post: added {posted} instalment(s) that fell due. See SIP plans below.")
 entries = state.get_frame("portfolio")
 
 mode = st.radio("How do you want to provide holdings?", ["Upload a file", "Add entries manually", "Record a sale"],
@@ -204,6 +208,42 @@ else:
                 entries = combined
                 st.success(f"Added {stock}: {qty} × {buy:,.2f} = {inr(qty * buy, prefix='₹')}")
 
+# ------------------------------------------------------------- SIP plans ----
+sips = normalise_sips(state.get_frame("sips"))
+n_active = int((sips["active"] > 0).sum()) if not sips.empty else 0
+with st.expander(f"SIP plans — auto-post monthly instalments ({n_active} active)", expanded=False):
+    st.caption("Each **active** plan posts one BUY row per month (Cost = amount, sector as set, Qty left blank since the "
+               "NAV isn't known here) on its instalment day; months missed while the app was closed are posted on the next "
+               "visit. Posted rows carry the marker `SIP` and can be edited like any entry. Add rows with the + below.")
+    sip_grid = sips.copy()
+    sip_grid["active"] = sip_grid["active"] > 0
+    sip_grid["next_due"] = [str(next_due(r) or "—") for _, r in normalise_sips(sips).iterrows()] if not sips.empty else []
+    sip_sector_options = sorted(set(COMMON_SECTORS) | set(sips["sector"].dropna().astype(str)))
+    edited_sips = st.data_editor(
+        sip_grid, hide_index=True, width="stretch", num_rows="dynamic",
+        key=f"sip_grid_{state.version('sips_version')}",
+        column_config={
+            "fund": st.column_config.TextColumn("Fund", required=True, help="e.g. PARAG PARIKH FLEXI CAP FUND"),
+            "sector": st.column_config.SelectboxColumn("Sector", options=sip_sector_options, default="MUTUAL FUND"),
+            "amount": st.column_config.NumberColumn("Amount (₹/instalment)", min_value=0, step=500, format="%.0f"),
+            "day": st.column_config.NumberColumn("Day of month", min_value=1, max_value=31, step=1, format="%.0f"),
+            "start_month": st.column_config.DateColumn("Start month", format="MMM YY"),
+            "active": st.column_config.CheckboxColumn("Active"),
+            "last_applied": st.column_config.DateColumn("Last posted", format="MMM YY", disabled=True),
+            "next_due": st.column_config.TextColumn("Next instalment", disabled=True),
+        },
+    )
+    if st.button("Save SIP plans", type="primary", key="sips_save"):
+        cleaned = normalise_sips(edited_sips.drop(columns=["next_due"], errors="ignore"))
+        bad = cleaned[(cleaned["amount"].isna()) | (cleaned["amount"] <= 0)]
+        if not bad.empty:
+            st.error("Every plan needs an amount greater than 0.")
+        else:
+            state.put_frame("sips", cleaned if not cleaned.empty else None)
+            state.bump("sips_version")
+            st.success(f"Saved {len(cleaned)} SIP plan(s). Due instalments post automatically on the next page load.")
+            st.rerun()
+
 if entries is not None and not entries.empty:
     n_sells = int((entries["side"] == "sell").sum()) if "side" in entries else 0
     n_buys = len(entries) - n_sells
@@ -214,20 +254,57 @@ if entries is not None and not entries.empty:
         view_mode = st.radio("View", ["All entries (editable)", "Remaining holdings (after sales)"],
                              horizontal=True, key="pf_entries_view", label_visibility="collapsed")
         if view_mode.startswith("Remaining"):
-            remaining, _ = match_sales(entries)
+            remaining, _ = match_sales(entries, with_lineage=True)
             if remaining.empty:
                 st.info("Nothing is currently held: every purchase has been sold.")
             else:
-                shown = remaining.sort_values("month", ascending=False, na_position="last").copy()
-                shown = pd.DataFrame({
-                    "Bought": shown["month"].dt.strftime("%b-%y"),
-                    "Sector": shown["sector"], "Stock": shown["stock"],
-                    "Qty held": shown["qty"].map(lambda v: inr(v) if pd.notna(v) else "—"),
-                    "Cost held": shown["cost"].map(lambda v: inr(v) if pd.notna(v) else "—"),
+                st.caption("**Qty held** and **Cost held** are editable: corrections are written back to the original "
+                           "purchase lot, leaving the sold portion (and past profit booked) untouched. "
+                           "Set Qty held to 0 to drop a wrongly-held lot.")
+                rem = remaining.sort_values("month", ascending=False, na_position="last").reset_index(drop=True)
+                rgrid = pd.DataFrame({
+                    "month": rem["month"], "sector": rem["sector"], "stock": rem["stock"],
+                    "qty": pd.to_numeric(rem["qty"], errors="coerce"),
+                    "cost": pd.to_numeric(rem["cost"], errors="coerce"),
                 })
-                st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 14) * 35 + 3)
-                st.caption("What is still held per purchase lot after FIFO-matching the sales. "
-                           "A fully sold lot disappears from this view; edit or remove rows in the other view.")
+                redited = st.data_editor(
+                    rgrid, hide_index=True, width="stretch", height=min(len(rgrid) + 1, 14) * 35 + 3,
+                    disabled=["month", "sector", "stock"],
+                    key=f"remaining_grid_{state.version('portfolio_version')}",
+                    column_config={
+                        "month": st.column_config.DateColumn("Bought", format="MMM YY"),
+                        "sector": st.column_config.TextColumn("Sector"),
+                        "stock": st.column_config.TextColumn("Stock"),
+                        "qty": st.column_config.NumberColumn("Qty held", min_value=0, format="%.0f"),
+                        "cost": st.column_config.NumberColumn("Cost held (₹)", min_value=0, format="%.0f"),
+                    },
+                )
+                if st.button("Save corrections", type="primary", key="remaining_save"):
+                    updated = entries.copy()
+                    fixed = 0
+                    for pos in range(len(rem)):
+                        src = rem.iloc[pos]["src_index"]
+                        sold_q = float(rem.iloc[pos]["sold_qty"]) if pd.notna(rem.iloc[pos]["sold_qty"]) else 0.0
+                        sold_c = float(rem.iloc[pos]["sold_cost"]) if pd.notna(rem.iloc[pos]["sold_cost"]) else 0.0
+                        row_changed = False
+                        for col in ("qty", "cost"):
+                            if cell_changed(rgrid.iloc[pos][col], redited.iloc[pos][col]):
+                                new_rem = redited.iloc[pos][col]
+                                total = (sold_q if col == "qty" else sold_c) + (0.0 if pd.isna(new_rem) else float(new_rem))
+                                updated.at[src, col] = total
+                                row_changed = True
+                        if row_changed:
+                            q = pd.to_numeric(pd.Series([updated.at[src, "qty"]]), errors="coerce").iloc[0]
+                            c = pd.to_numeric(pd.Series([updated.at[src, "cost"]]), errors="coerce").iloc[0]
+                            if pd.notna(q) and q > 0 and pd.notna(c) and "buy" in updated.columns:
+                                updated.at[src, "buy"] = float(c) / float(q)
+                            fixed += 1
+                    if not fixed:
+                        st.info("No cells were changed.")
+                    else:
+                        save_portfolio(updated, state.get_meta().get("portfolio_source", "manual entry"))
+                        st.success(f"Corrected {fixed} lot(s).")
+                        st.rerun()
         else:
             if n_sells:
                 st.caption("A sale is kept as its own SELL row next to the original BUY rows — that is the audit trail, "

@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 # Used only when there is no sign-in screen (no APP_PASSWORD) and no owners yet.
 DEFAULT_USERS = [{"slug": "owner", "name": "Owner"}]
 
-FRAME_TABLES = ("trades", "excluded", "capital", "benchmarks", "portfolio", "benchmark_monthly")
+FRAME_TABLES = ("trades", "excluded", "capital", "benchmarks", "portfolio", "benchmark_monthly", "sips")
 
 # Type restoration on read: SQLite is loosely typed, so we re-type by column name.
 DATE_COLUMNS = {
@@ -38,8 +38,9 @@ DATE_COLUMNS = {
     "portfolio": ["month"],
     "benchmarks": [],
     "benchmark_monthly": ["month"],
+    "sips": ["start_month", "last_applied"],
 }
-STRING_COLUMNS = ("stock", "type", "sector", "Month", "period_label", "source_sheet", "entry_kind", "strike_label")
+STRING_COLUMNS = ("stock", "type", "sector", "Month", "period_label", "source_sheet", "entry_kind", "strike_label", "fund")
 
 _engines: dict[str, Engine] = {}
 _write_lock = threading.RLock()  # serialise writes within this process; the DB handles other processes
