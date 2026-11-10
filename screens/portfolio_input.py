@@ -14,7 +14,9 @@ from core.portfolio import (
     entry_from_form,
     load_portfolio_workbook,
     looks_like_portfolio_header,
+    match_sales,
     portfolio_template_bytes,
+    sale_from_form,
 )
 
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -42,7 +44,7 @@ def save_portfolio(entries: pd.DataFrame | None, source: str) -> None:
 
 entries = state.get_frame("portfolio")
 
-mode = st.radio("How do you want to provide holdings?", ["Upload a file", "Add entries manually"],
+mode = st.radio("How do you want to provide holdings?", ["Upload a file", "Add entries manually", "Record a sale"],
                 horizontal=True, label_visibility="collapsed")
 
 if mode == "Upload a file":
@@ -88,6 +90,52 @@ if mode == "Upload a file":
                         st.write(note)
                     st.dataframe(pd.DataFrame({"Your header": list(result.mapping), "Used as": list(result.mapping.values())}),
                                  width="stretch", hide_index=True)
+elif mode == "Record a sale":
+    if entries is None or entries.empty:
+        st.info("Add purchases first; then you can record a sale against them.")
+    else:
+        remaining, _ = match_sales(entries)
+        held = remaining.groupby("stock").agg(qty=("qty", "sum"), cost=("cost", "sum"), sector=("sector", "first")) if not remaining.empty else pd.DataFrame()
+        held = held[held["qty"] > 0] if not held.empty else held
+        if held.empty:
+            st.info("Nothing is currently held (everything has been sold).")
+        else:
+            st.caption("Sales are matched to purchases FIFO (oldest lots first). Profit booked, ROI and CAGR appear on the Dashboard Reports → Investments tab.")
+            with st.form("record_sale", clear_on_submit=True, border=True):
+                a, b, c = st.columns(3)
+                today = dt.date.today()
+                m1, m2 = a.columns([3, 2])
+                month_name = m1.selectbox("Sale month", MONTH_NAMES, index=today.month - 1)
+                year = m2.selectbox("Year", list(range(today.year, 1999, -1)), index=0, key="sale_year")
+                sale_month = dt.date(year, MONTH_NAMES.index(month_name) + 1, 1)
+                stock = b.selectbox("Stock", list(held.index), format_func=lambda s_: f"{s_}  (held {held.loc[s_, 'qty']:g})")
+                qty = c.number_input("Qty to sell", min_value=0.0, step=1.0, value=0.0)
+                a, b, c = st.columns(3)
+                price = a.number_input("Sell price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
+                charges = b.number_input("Charges (₹, optional)", min_value=0.0, step=1.0, value=0.0, format="%.2f")
+                if qty and price:
+                    c.caption(f"Sale value: {inr(qty * price - charges, prefix='₹')}")
+                submitted = st.form_submit_button("Record sale", type="primary")
+            if submitted:
+                problems = []
+                if qty <= 0 or price <= 0:
+                    problems.append("Qty and sell price must be greater than 0.")
+                elif qty > float(held.loc[stock, "qty"]) + 1e-9:
+                    problems.append(f"You hold {held.loc[stock, 'qty']:g} {stock}; cannot sell {qty:g}.")
+                if problems:
+                    for p_ in problems:
+                        st.error(p_)
+                else:
+                    result = sale_from_form(sale_month, str(held.loc[stock, "sector"]), stock, qty, price, charges)
+                    show_messages(result)
+                    if result.ok:
+                        combined = pd.concat([entries, result.entries], ignore_index=True)
+                        save_portfolio(combined, state.get_meta().get("portfolio_source", "manual entry"))
+                        entries = combined
+                        _, sales = match_sales(combined)
+                        last = sales.iloc[-1]
+                        st.success(f"Recorded sale of {qty:g} {stock}: profit booked {inr(last['profit'], prefix='₹')}"
+                                   + (f", ROI {last['roi']:.1f}%, CAGR {last['cagr']:.1f}% over {last['years']:.1f} years" if pd.notna(last["cagr"]) else ""))
 else:
     known_sectors = sorted(set(COMMON_SECTORS) | (set(entries["sector"].dropna()) if entries is not None else set()))
     with st.form("add_entry", clear_on_submit=True, border=True):
@@ -131,32 +179,35 @@ else:
                 st.success(f"Added {stock}: {qty} × {buy:,.2f} = {inr(qty * buy, prefix='₹')}")
 
 if entries is not None and not entries.empty:
-    total = float(entries["cost"].sum())
-    with st.expander(f"Holdings saved for {owner} ({len(entries):,} entries, {inr(total, prefix='₹')} invested)",
+    total = float(entries.loc[entries["side"] != "sell", "cost"].sum()) if "side" in entries else float(entries["cost"].sum())
+    with st.expander(f"Entries saved for {owner} ({len(entries):,} rows, {inr(total, prefix='₹')} purchased)",
                      expanded=(mode == "Add entries manually")):
-        view = entries.copy()
+        order = entries.sort_values("month", ascending=False, na_position="last").index
+        view = entries.loc[order].copy()
         view["month"] = view["month"].dt.strftime("%b-%y")
-        view["% Investment"] = (view["cost"] / total * 100) if total else pd.NA
-        view = view.rename(columns={"month": "Month", "sector": "Sector", "stock": "Stock", "qty": "Qty",
-                                    "buy": "Buy", "cost": "Cost", "gift": "Gift", "source_sheet": "Sheet"})
+        buys_only = view["side"] != "sell" if "side" in view else pd.Series(True, index=view.index)
+        view["% Investment"] = (view["cost"] / total * 100).where(buys_only) if total else pd.NA
+        view = view.rename(columns={"month": "Month", "sector": "Sector", "stock": "Stock", "qty": "Qty", "side": "Side",
+                                    "buy": "Price", "cost": "Value", "gift": "Gift", "charges": "Charges", "source_sheet": "Sheet"})
         view.insert(0, "Remove", False)
         edited = st.data_editor(
             view, hide_index=True, width="stretch", height=min(len(view) + 1, 12) * 35 + 3,
             disabled=[c for c in view.columns if c != "Remove"],
             key=f"portfolio_list_{state.version('portfolio_version')}",
             column_config={"Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
-                           "Buy": st.column_config.NumberColumn(format="%.2f"),
-                           "Cost": st.column_config.NumberColumn(format="%.0f"),
+                           "Price": st.column_config.NumberColumn(format="%.2f"),
+                           "Value": st.column_config.NumberColumn(format="%.0f"),
+                           "Charges": st.column_config.NumberColumn(format="%.0f"),
                            "Gift": st.column_config.NumberColumn(format="%.0f"),
                            "% Investment": st.column_config.NumberColumn(format="%.2f")},
         )
         r1, r2 = st.columns([1, 3])
         if r1.button("Remove selected", key="portfolio_remove"):
-            keep = ~edited["Remove"].fillna(False).astype(bool).to_numpy()
-            if keep.all():
+            remove_mask = edited["Remove"].fillna(False).astype(bool).to_numpy()
+            if not remove_mask.any():
                 st.info("Tick at least one row first.")
             else:
-                remaining = entries[keep].reset_index(drop=True)
+                remaining = entries.drop(index=order[remove_mask]).reset_index(drop=True)
                 save_portfolio(remaining if not remaining.empty else None, state.get_meta().get("portfolio_source", ""))
                 st.rerun()
         confirm = r2.checkbox("I want to delete every holding for this owner", key="portfolio_confirm")

@@ -99,6 +99,7 @@ def kpis(summary: pd.DataFrame, trades: pd.DataFrame) -> dict:
     return {
         "net_profit": float(summary["Net Profit"].sum()),
         "avg_roi": float(roi.mean()) if not roi.empty else None,
+        "cagr": cagr_from_monthly(roi),
         "months_with_roi": int(roi.size),
         "months": int(len(summary)),
         "trades": int(summary["Trades"].sum()),
@@ -209,3 +210,14 @@ def yearly_with_total(yearly: pd.DataFrame) -> pd.DataFrame:
     shown = yearly.copy()
     shown["Year"] = shown["Year"].astype(str)
     return pd.concat([shown, total], ignore_index=True)
+
+
+def cagr_from_monthly(monthly_pct: pd.Series) -> float | None:
+    """Annualised compound growth from monthly % returns: (∏(1+r))^(12/n) − 1, in %."""
+    r = pd.to_numeric(monthly_pct, errors="coerce").dropna() / 100.0
+    if r.empty:
+        return None
+    growth = float((1 + r).prod())
+    if growth <= 0:
+        return -100.0
+    return (growth ** (12.0 / len(r)) - 1) * 100

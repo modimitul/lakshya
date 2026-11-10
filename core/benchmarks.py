@@ -178,3 +178,27 @@ def cumulative_series(summary: pd.DataFrame, monthly_bench: pd.DataFrame, column
             merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0).cumsum()
     merged["Month"] = merged["month"].dt.strftime("%b-%y")
     return merged
+
+
+def cagr_table(summary: pd.DataFrame, monthly_bench: pd.DataFrame, basis: str = "calendar",
+               columns: list[str] | None = None) -> pd.DataFrame:
+    """Per year/FY: annualised compound return of Z ROI% and each benchmark over the owner's months,
+    plus an 'Overall' row compounded across all those months (annualised)."""
+    from .metrics import cagr_from_monthly
+
+    user = user_monthly_roi(summary).dropna(subset=[Z_COLUMN])
+    bench = monthly_bench.copy() if monthly_bench is not None else pd.DataFrame(columns=["month"])
+    if columns:
+        bench = bench[["month"] + [c for c in columns if c in bench]]
+    merged = pd.merge(user, bench, on="month", how="left").sort_values("month")
+    if merged.empty:
+        return merged
+    merged["Period"] = period_label(merged["month"], basis)
+    value_cols = [c for c in merged.columns if c not in ("month", "Period")]
+    order = merged.groupby("Period")["month"].min().sort_values().index
+    rows = []
+    for period in order:
+        part = merged[merged["Period"] == period]
+        rows.append({"Period": period, "Months": len(part), **{c: cagr_from_monthly(part[c]) for c in value_cols}})
+    rows.append({"Period": "Overall", "Months": len(merged), **{c: cagr_from_monthly(merged[c]) for c in value_cols}})
+    return pd.DataFrame(rows)

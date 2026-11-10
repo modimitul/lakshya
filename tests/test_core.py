@@ -402,3 +402,39 @@ def test_charge_entries_are_not_trades_but_still_cost_money():
     # data saved before entry_kind existed is classified structurally
     legacy = t.drop(columns=["entry_kind", "strike_label"])
     assert charge_mask(legacy).tolist() == [False, True, True, False, False]
+
+
+# ------------------------------------------------------------ sales / CAGR ----
+def test_fifo_sale_matching_profit_roi_cagr():
+    from core.portfolio import clean_portfolio, match_sales, sales_summary, holdings
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Jan-24", "Mar-26", "Jan-22"], "SECTORS": ["CHEMICALS", "CHEMICALS", "CHEMICALS", "RETAIL"],
+        "STOCK": ["SRF", "SRF", "SRF", "DMART"], "QTY": [50, 30, 60, 100], "BUY": [2000, 2500, 3000, 3660.44],
+        "SIDE": ["BUY", "BUY", "SELL", "BUY"], "CHARGES": [None, None, 100, None],
+    })
+    entries = clean_portfolio(raw).entries
+    assert entries["side"].tolist() == ["buy", "buy", "sell", "buy"]
+    remaining, sales = match_sales(entries)
+    sale = sales.iloc[0]
+    assert sale["cost"] == pytest.approx(50 * 2000 + 10 * 2500)          # oldest lots first
+    assert sale["sale_value"] == pytest.approx(60 * 3000 - 100)
+    assert sale["profit"] == pytest.approx(54900) and sale["roi"] == pytest.approx(43.92)
+    assert sale["years"] == pytest.approx((100000 * 32 / 12 + 25000 * 26 / 12) / 125000)
+    assert sale["cagr"] == pytest.approx(((179900 / 125000) ** (1 / sale["years"]) - 1) * 100)
+    held = holdings(remaining).set_index("Stock")
+    assert held.loc["SRF", "Qty"] == 20 and held.loc["SRF", "Cost"] == 50000
+    assert held.loc["DMART", "Qty"] == 100
+    assert sales_summary(sales)["profit"] == pytest.approx(54900)
+
+
+def test_trading_cagr_kpi_and_benchmark_cagr_table():
+    from core.metrics import cagr_from_monthly, monthly_summary, kpis
+    from core.benchmarks import seed_frame, cagr_table
+    assert cagr_from_monthly(pd.Series([1.0] * 12)) == pytest.approx((1.01 ** 12 - 1) * 100)
+    assert cagr_from_monthly(pd.Series([2.0] * 6)) == pytest.approx((1.02 ** 12 - 1) * 100)   # annualised
+    assert cagr_from_monthly(pd.Series([], dtype=float)) is None
+    summary = pd.DataFrame({"month": pd.to_datetime(["2026-04-01", "2026-05-01"]), "Monthly ROI": [2.0, 2.0]})
+    cg = cagr_table(summary, seed_frame(), "calendar", ["Nifty ROI"]).set_index("Period")
+    assert cg.loc["Overall", "Months"] == 2
+    assert cg.loc["Overall", "Z ROI%"] == pytest.approx((1.02 ** 12 - 1) * 100)
+    assert cg.loc["Overall", "Nifty ROI"] == pytest.approx(((1.0746 * (1 - 0.0187)) ** 6 - 1) * 100, rel=1e-3)

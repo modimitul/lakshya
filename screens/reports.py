@@ -5,12 +5,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from core import state
-from core.benchmarks import Z_COLUMN, comparison_table, cumulative_series, get_monthly, period_label
+from core.benchmarks import Z_COLUMN, cagr_table, comparison_table, get_monthly, period_label
 from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, capital_table, kpis, monthly_summary, to_excel_bytes,
                           yearly_summary, yearly_with_total)
-from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, holdings,
-                            sector_allocation, sector_class_map, with_asset_class)
+from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, holdings, match_sales,
+                            sales_summary, sector_allocation, sector_class_map, with_asset_class)
 
 owner = state.user_name()
 st.title("Dashboard Reports")
@@ -91,7 +91,9 @@ with trading_tab:
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Net profit", inr(k["net_profit"], prefix="₹"))
         c2.metric("Avg monthly ROI", f"{pct(k['avg_roi'])}%" if k["avg_roi"] is not None else "—",
-                  help=f"Simple average over the {k['months_with_roi']} month(s) that have a capital figure.")
+                  delta=(f"CAGR {pct(k['cagr'])}%" if k.get("cagr") is not None else None), delta_color="off",
+                  help=f"Simple average over the {k['months_with_roi']} month(s) that have a capital figure. "
+                       "CAGR = the same monthly ROIs compounded and annualised: (∏(1 + ROI))^(12 ÷ months) − 1.")
         c3.metric("Win rate", f"{pct(k['win_rate'], 1)}%" if k["win_rate"] is not None else "—",
                   help="Share of trades with positive gross profit. Charge entries (brokerage, DP/AMC charges …) are not trades and are excluded.")
         c4.metric("Best month", k["best_month"][0], inr(k["best_month"][1]))
@@ -130,7 +132,21 @@ with trading_tab:
                    + "Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
                    "Grand Total averages Investments and ROI across years and sums the rest.")
 
-        # ----------------------------------------- vs benchmarks (charts, then table)
+        # ----------------------------------------- vs benchmarks (table, then one simple chart)
+        def overall_bar(frame: pd.DataFrame, label_col: str, total_label: str, title: str, key: str) -> None:
+            """One horizontal bar per series for the total/overall row; the owner's bar highlighted."""
+            row = frame[frame[label_col] == total_label]
+            if row.empty:
+                return
+            values = row.drop(columns=[c for c in (label_col, "Months") if c in row]).iloc[0]
+            values = pd.to_numeric(values, errors="coerce").dropna().sort_values()
+            colors = [BLUE if name == Z_COLUMN else "#9FB3C8" for name in values.index]
+            fig = go.Figure(go.Bar(x=values.values, y=[("My returns" if n == Z_COLUMN else n) for n in values.index],
+                                   orientation="h", marker_color=colors, text=[pct(v) + "%" for v in values.values],
+                                   textposition="outside", hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
+            fig.update_layout(title=title, xaxis_title="%", margin=MARGIN, height=60 + 32 * len(values), showlegend=False)
+            st.plotly_chart(fig, width="stretch", key=key)
+
         st.subheader("My returns vs benchmarks")
         bench_monthly = get_monthly()
         series_options = [c for c in bench_monthly.columns if c != "month"]
@@ -140,34 +156,25 @@ with trading_tab:
         if cmp.empty or cmp[Z_COLUMN].isna().all():
             st.info("Monthly ROI needs capital figures (Trading Book → Monthly capital) before it can be compared.")
         else:
-            b1, b2 = st.columns(2)
-            with b1:
-                body = cmp[cmp["Period"] != "Grand Total"]
-                fig = go.Figure()
-                for col in [Z_COLUMN] + [c for c in picked if c in body]:
-                    fig.add_bar(name=col, x=body["Period"].astype(str), y=pd.to_numeric(body[col], errors="coerce"),
-                                hovertemplate="%{x}: %{y:.2f}%<extra>" + col + "</extra>")
-                fig.update_layout(barmode="group", title="Return by period (%)", yaxis_title="%", margin=MARGIN, height=400,
-                                  xaxis=dict(type="category"), legend=dict(orientation="h", y=-0.3))
-                st.plotly_chart(fig, width="stretch", key="cmp_bars")
-            with b2:
-                cum = cumulative_series(full_summary, bench_monthly, picked)
-                fig = go.Figure()
-                for col in [Z_COLUMN] + [c for c in picked if c in cum]:
-                    fig.add_scatter(name=col, x=cum["Month"], y=cum[col], mode="lines+markers",
-                                    line=dict(width=3 if col == Z_COLUMN else 1.5),
-                                    hovertemplate="%{x}: %{y:.2f}%<extra>" + col + "</extra>")
-                fig.update_layout(title="Cumulative monthly return (%)", yaxis_title="%", margin=MARGIN, height=400,
-                                  legend=dict(orientation="h", y=-0.3))
-                st.plotly_chart(fig, width="stretch", key="cmp_cum")
+            st.markdown("**Total return (sum of monthly %)**")
             display = cmp.copy()
             for col in display.columns[1:]:
                 display[col] = display[col].map(lambda v: pct(v) if pd.notna(v) else "")
             st.dataframe(display, hide_index=True, width="stretch", height=(len(display) + 1) * 35 + 3)
-            st.caption(f"{Z_COLUMN} and every benchmark are the SUM of monthly % returns within the "
+            overall_bar(cmp, "Period", "Grand Total", "Grand Total return, all listed periods (%)", "cmp_total_bar")
+
+            st.markdown("**CAGR (compounded, annualised)**")
+            cg = cagr_table(full_summary, bench_monthly, basis, picked or series_options)
+            display_cg = cg.copy()
+            for col in display_cg.columns:
+                if col not in ("Period", "Months"):
+                    display_cg[col] = display_cg[col].map(lambda v: pct(v) if pd.notna(v) else "")
+            st.dataframe(display_cg, hide_index=True, width="stretch", height=(len(display_cg) + 1) * 35 + 3)
+            overall_bar(cg, "Period", "Overall", "Overall CAGR, all listed months (%)", "cmp_cagr_bar")
+            st.caption(f"{Z_COLUMN} and every benchmark use monthly % returns over the same months you have ROI, grouped by "
                        + ("financial year (Apr–Mar). " if basis == "financial" else "calendar year. ")
-                       + "Benchmarks are summed over the same months you have ROI, so part-years compare like for like. "
-                       "Grand Total sums the listed periods. Benchmark months are maintained on the Benchmarks screen.")
+                       + "Total return sums the months; CAGR compounds them and annualises by 12 ÷ months (so a part-year is scaled to a full year). "
+                       "Benchmark months are maintained on the Benchmarks screen.")
 
         # ------------------------------------- monthly (period selector, charts, table)
         st.subheader("Monthly performance")
@@ -247,6 +254,7 @@ with trading_tab:
                   "Capital": capital_table(summary), "Brokerage": brokerage_table(summary)}
         if not cmp.empty:
             sheets["Vs benchmarks"] = cmp
+            sheets["Vs benchmarks CAGR"] = cagr_table(full_summary, bench_monthly, basis, picked or series_options)
         for dim in dimensions:
             sheets[f"By {dim.title()}"] = breakdown(trades, dim)
         sheets["Trades"] = trades.assign(Month=trades["month"].dt.strftime("%b-%y"))
@@ -317,21 +325,24 @@ with invest_tab:
         st.page_link("screens/portfolio_input.py", label="Go to Investment Book", icon="📥")
     else:
         overrides = state.get_meta().get("asset_class_overrides", {})
-        classified = with_asset_class(entries, overrides)
+        classified_all = with_asset_class(entries, overrides)
+        remaining_all, sales_all = match_sales(classified_all)
+        classified = remaining_all            # holdings views use what is still held
 
-        years = sorted(int(y) for y in classified["month"].dt.year.dropna().unique())
-        sectors = sorted(classified["sector"].dropna().unique())
-        months = [m for m in classified.sort_values("month")["month"].dt.strftime("%b-%y").dropna().unique()]
+        years = sorted(int(y) for y in classified_all["month"].dt.year.dropna().unique())
+        sectors = sorted(classified_all["sector"].dropna().unique())
+        months = [m for m in classified_all.sort_values("month")["month"].dt.strftime("%b-%y").dropna().unique()]
         f1, f2, f3 = st.columns(3)
         year_pick = f1.multiselect("Year", years, placeholder="All years")
         sector_pick = f2.multiselect("Sectors", sectors, placeholder="All sectors")
         month_pick = f3.multiselect("Month", months, placeholder="All months")
         view = filter_entries(classified, year_pick, sector_pick, month_pick)
+        sales_view = filter_entries(sales_all, year_pick, sector_pick, month_pick) if not sales_all.empty else sales_all
 
         with st.expander("Asset class rules (which sectors count as ETF, Equity MF or Debt)"):
             st.caption("Everything not listed here is Equity. Rules are saved for this owner; new sectors are "
                        "classified automatically from their name until you change them here.")
-            current_map = sector_class_map(classified, overrides)
+            current_map = sector_class_map(classified_all, overrides)
             all_sectors = sorted(current_map)
             picks = {}
             cols = st.columns(3)
@@ -373,6 +384,50 @@ with invest_tab:
                 st.plotly_chart(fig, width="stretch", key="asset_class_pie")
 
             inv_sheets = {"Asset classes": summary}
+
+            # ---- profit booked on sales (FIFO-matched)
+            st.subheader("Profit booked on sales")
+            if sales_view is None or sales_view.empty:
+                st.caption("No sales recorded yet. Use Investment Book → Record a sale (or SIDE = SELL rows in an upload).")
+            else:
+                ss = sales_summary(sales_view)
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Profit booked", inr(ss["profit"], prefix="₹"))
+                k2.metric("Cost of lots sold", inr(ss["cost"], prefix="₹"))
+                k3.metric("ROI", f"{pct(ss['roi'], 1)}%" if ss["roi"] is not None else "—", help="Profit ÷ cost of the lots sold.")
+                k4.metric("CAGR", f"{pct(ss['cagr'], 1)}%" if ss["cagr"] is not None else "—",
+                          help="(Sale value ÷ cost)^(1 ÷ cost-weighted years held) − 1, across all sales shown.")
+                k5.metric("Sales", f"{ss['count']}")
+                srt = sales_view.sort_values("month")
+                fig = go.Figure()
+                fig.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
+                            marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],
+                            text=srt["profit"].map(inr), textposition="outside", hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+                fig.add_scatter(name="CAGR (%)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["cagr"], yaxis="y2",
+                                mode="markers+text", text=srt["cagr"].map(lambda v: pct(v, 1) + "%" if pd.notna(v) else ""),
+                                textposition="top center", marker=dict(color=BLUE, size=10),
+                                hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
+                fig.update_layout(title="Profit booked and CAGR per sale", margin=MARGIN, height=380, xaxis=dict(type="category"),
+                                  yaxis=dict(title="₹"), yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
+                                  legend=dict(orientation="h", y=-0.3))
+                st.plotly_chart(fig, width="stretch", key="sales_chart")
+                sale_table = pd.DataFrame({
+                    "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
+                    "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
+                    "Cost (FIFO)": srt["cost"].map(inr), "Profit": srt["profit"].map(inr), "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
+                    "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
+                    "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
+                })
+                total_row = pd.DataFrame([{"Sold": "Total", "Stock": "", "Qty": "", "Sell price": "", "Sale value": inr(srt["sale_value"].sum()),
+                                           "Cost (FIFO)": inr(ss["cost"]), "Profit": inr(ss["profit"]),
+                                           "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—", "First bought": "", "Years held": "",
+                                           "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
+                sale_table = pd.concat([sale_table, total_row], ignore_index=True)
+                st.dataframe(sale_table, hide_index=True, width="stretch", height=min(len(sale_table) + 1, 15) * 35 + 3)
+                if (srt["unmatched_qty"] > 0).any():
+                    st.warning("Some sales exceed the quantity bought before them; their unmatched part has no cost basis.")
+                inv_sheets["Sales"] = srt
+
             class_tabs = st.tabs(ASSET_CLASSES)
             for tab, cls in zip(class_tabs, ASSET_CLASSES):
                 with tab:
@@ -381,7 +436,8 @@ with invest_tab:
                         st.info(f"No {cls} holdings in the current selection.")
                     else:
                         inv_sheets.update(render_holdings(slice_, f"{cls}", key=cls.replace(" ", "_").lower()))
-            inv_sheets["Entries"] = view.assign(Month=view["month"].dt.strftime("%b-%y"))
+            inv_sheets["Holdings (remaining)"] = view.assign(Month=view["month"].dt.strftime("%b-%y"))
+            inv_sheets["All entries"] = classified_all.assign(Month=classified_all["month"].dt.strftime("%b-%y"))
 
             st.subheader("Download")
             st.download_button("Download investment report (Excel)", to_excel_bytes(inv_sheets),

@@ -22,8 +22,11 @@ PORTFOLIO_ALIASES: dict[str, list[str]] = {
     "cost": ["cost", "cost value", "investment", "amount", "invested"],
     "pct_investment": ["% investment", "pct investment", "% of investment", "weight", "weight %"],
     "gift": ["gift amount", "gift", "gifted", "gift value"],
+    "side": ["side", "buy/sell", "buy / sell", "action", "transaction", "txn", "type"],
+    "charges": ["charges", "brokerage", "brokerage & other charges", "sell charges"],
 }
-NUMERIC_COLUMNS = ["qty", "buy", "cost", "pct_investment", "gift"]
+NUMERIC_COLUMNS = ["qty", "buy", "cost", "pct_investment", "gift", "charges"]
+SELL_WORDS = {"sell", "sold", "sale", "s", "redeem", "redemption", "exit"}
 
 COMMON_SECTORS = [
     "BANKS", "NBFC", "IT", "PHARMA", "CHEMICALS", "FMCG", "RETAIL", "AUTO", "CEMENT",
@@ -87,6 +90,14 @@ def clean_portfolio(raw: pd.DataFrame) -> PortfolioResult:
         result.warnings.append("No 'SECTORS' column; everything is grouped under OTHER.")
     df["sector"] = df["sector"].fillna("OTHER").str.upper()
     df["gift"] = df["gift"].fillna(0) if "gift" in df else 0.0
+    df["charges"] = df["charges"].fillna(0) if "charges" in df else 0.0
+    if "side" in df:
+        df["side"] = df["side"].astype("string").str.strip().str.lower().map(lambda v: "sell" if v in SELL_WORDS else "buy").fillna("buy").astype("string")
+    else:
+        df["side"] = pd.Series(["buy"] * len(df), index=df.index, dtype="string")
+    n_sells = int((df["side"] == "sell").sum())
+    if n_sells:
+        result.notes.append(f"{n_sells} rows are sales (SIDE = SELL): matched FIFO against purchases on the dashboard.")
     df = df.drop(columns=["pct_investment"], errors="ignore")
 
     if df.empty and not result.errors:
@@ -108,8 +119,90 @@ def load_portfolio(file, filename: str, sheet_name=0) -> PortfolioResult:
 
 
 def entry_from_form(month, sector: str, stock: str, qty: float, buy: float, gift: float = 0.0) -> PortfolioResult:
-    raw = pd.DataFrame([{"MONTH": month, "SECTORS": sector, "STOCK": stock, "QTY": qty, "BUY": buy, "GIFT AMOUNT": gift}])
+    raw = pd.DataFrame([{"MONTH": month, "SECTORS": sector, "STOCK": stock, "QTY": qty, "BUY": buy, "GIFT AMOUNT": gift, "SIDE": "BUY"}])
     return clean_portfolio(raw)
+
+
+def sale_from_form(month, sector: str, stock: str, qty: float, price: float, charges: float = 0.0) -> PortfolioResult:
+    """A sale row: 'buy' holds the sell price and 'cost' the gross sale value (qty × price)."""
+    raw = pd.DataFrame([{"MONTH": month, "SECTORS": sector, "STOCK": stock, "QTY": qty, "BUY": price,
+                         "SIDE": "SELL", "CHARGES": charges}])
+    return clean_portfolio(raw)
+
+
+# ------------------------------------------------------------------ FIFO --
+def _years_between(a: pd.Timestamp, b: pd.Timestamp) -> float:
+    months = (b.year - a.year) * 12 + (b.month - a.month)
+    return max(months, 1) / 12.0
+
+
+def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """FIFO-match sell rows against buy rows of the same stock.
+
+    Returns (remaining, sales):
+      remaining: buy rows with qty/cost reduced to what is still held (fully sold lots dropped)
+      sales: one row per sale with cost basis, profit, ROI %, cost-weighted holding years and CAGR %
+    """
+    if entries.empty or "side" not in entries:
+        out = entries.copy()
+        return out, pd.DataFrame()
+    buys = entries[entries["side"] != "sell"].copy()
+    sells = entries[entries["side"] == "sell"].copy()
+    buys["qty_left"] = pd.to_numeric(buys["qty"], errors="coerce").fillna(0).astype(float)
+    buys["unit_cost"] = pd.to_numeric(buys["cost"], errors="coerce") / pd.to_numeric(buys["qty"], errors="coerce").where(lambda q: q > 0)
+    buys = buys.sort_values(["month", "stock"], na_position="last")
+    sale_rows = []
+    for _, sale in sells.sort_values("month", na_position="last").iterrows():
+        qty_to_match = float(sale["qty"]) if pd.notna(sale["qty"]) else 0.0
+        price = float(sale["buy"]) if pd.notna(sale["buy"]) else 0.0
+        gross = qty_to_match * price
+        charges = float(sale["charges"]) if "charges" in sale and pd.notna(sale["charges"]) else 0.0
+        matched_cost, weighted_years, matched_qty, first_buy = 0.0, 0.0, 0.0, None
+        lots = buys[(buys["stock"] == sale["stock"]) & (buys["qty_left"] > 0)]
+        if pd.notna(sale["month"]):
+            lots = lots[(lots["month"].isna()) | (lots["month"] <= sale["month"])]
+        for idx, lot in lots.iterrows():
+            if qty_to_match <= 0:
+                break
+            take = min(lot["qty_left"], qty_to_match)
+            unit = float(lot["unit_cost"]) if pd.notna(lot["unit_cost"]) else 0.0
+            matched_cost += take * unit
+            if pd.notna(lot["month"]) and pd.notna(sale["month"]):
+                weighted_years += take * unit * _years_between(lot["month"], sale["month"])
+            first_buy = lot["month"] if first_buy is None else min(first_buy, lot["month"]) if pd.notna(lot["month"]) else first_buy
+            buys.at[idx, "qty_left"] = lot["qty_left"] - take
+            matched_qty += take
+            qty_to_match -= take
+        net_value = gross - charges
+        profit = net_value - matched_cost if matched_qty else float("nan")
+        roi = profit / matched_cost * 100 if matched_cost else float("nan")
+        years = weighted_years / matched_cost if matched_cost else float("nan")
+        if matched_cost and net_value > 0 and years and years > 0:
+            cagr = ((net_value / matched_cost) ** (1 / years) - 1) * 100
+        else:
+            cagr = float("nan")
+        sale_rows.append({
+            "month": sale["month"], "stock": sale["stock"], "sector": sale.get("sector"),
+            "qty": float(sale["qty"]) if pd.notna(sale["qty"]) else 0.0, "price": price, "charges": charges,
+            "sale_value": net_value, "cost": matched_cost, "profit": profit, "roi": roi,
+            "first_buy": first_buy, "years": years, "cagr": cagr, "unmatched_qty": qty_to_match,
+        })
+    remaining = buys[buys["qty_left"] > 0].copy()
+    remaining["qty"] = remaining["qty_left"]
+    remaining["cost"] = remaining["qty_left"] * remaining["unit_cost"].fillna(0)
+    remaining = remaining.drop(columns=["qty_left", "unit_cost"])
+    return remaining.reset_index(drop=True), pd.DataFrame(sale_rows)
+
+
+def sales_summary(sales: pd.DataFrame) -> dict:
+    if sales is None or sales.empty:
+        return {"profit": 0.0, "cost": 0.0, "roi": None, "cagr": None, "count": 0}
+    cost = float(sales["cost"].sum())
+    profit = float(sales["profit"].fillna(0).sum())
+    value = float(sales["sale_value"].sum())
+    years = float((sales["years"] * sales["cost"]).sum() / cost) if cost else float("nan")
+    cagr = ((value / cost) ** (1 / years) - 1) * 100 if cost and value > 0 and years and years > 0 else None
+    return {"profit": profit, "cost": cost, "roi": profit / cost * 100 if cost else None, "cagr": cagr, "count": int(len(sales))}
 
 
 # -------------------------------------------------------------- analysis --
@@ -152,9 +245,10 @@ def sector_allocation(entries: pd.DataFrame) -> pd.DataFrame:
 
 
 def portfolio_template_bytes() -> bytes:
-    headers = ["MONTH", "SECTORS", "STOCK", "QTY", "BUY", "COST", "GIFT AMOUNT"]
-    rows = [["Jul-23", "CHEMICALS", "SRF", 50, 2179.17, 108959, None],
-            ["Jan-22", "RETAIL", "DMART", 100, 3660.44, 366044, 366044]]
+    headers = ["MONTH", "SECTORS", "STOCK", "QTY", "BUY", "COST", "GIFT AMOUNT", "SIDE", "CHARGES"]
+    rows = [["Jul-23", "CHEMICALS", "SRF", 50, 2179.17, 108959, None, "BUY", None],
+            ["Jan-22", "RETAIL", "DMART", 100, 3660.44, 366044, 366044, "BUY", None],
+            ["Mar-26", "CHEMICALS", "SRF", 20, 2900, None, None, "SELL", 45]]
     frame = pd.DataFrame(rows, columns=headers)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:

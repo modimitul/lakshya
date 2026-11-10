@@ -192,7 +192,8 @@ else:
 if trades is not None and not trades.empty:
     with st.expander(f"Trades saved for {owner} ({len(trades):,})", expanded=(mode == "Add trades manually")):
         show_cols = [c for c in ("buy_date", "month", "stock", "type", "strike", "qty", "buy", "sell", "brokerage", "gross_profit", "roi") if c in trades]
-        view = trades[show_cols].copy()
+        order = trades.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
+        view = trades.loc[order, show_cols].copy()
         for col in ("buy_date", "month"):
             if col in view:
                 view[col] = view[col].dt.strftime("%d-%b-%y" if col == "buy_date" else "%b-%y")
@@ -211,11 +212,12 @@ if trades is not None and not trades.empty:
         )
         r1, r2 = st.columns([1, 3])
         if r1.button("Remove selected"):
-            keep = ~edited["Remove"].fillna(False).astype(bool).to_numpy()
-            if keep.all():
+            remove_mask = edited["Remove"].fillna(False).astype(bool).to_numpy()
+            if not remove_mask.any():
                 st.info("Tick at least one row first.")
             else:
-                remaining = trades[keep].reset_index(drop=True)
+                drop_idx = order[remove_mask]
+                remaining = trades.drop(index=drop_idx).reset_index(drop=True)
                 save_trades(remaining if not remaining.empty else None, state.get_frame("excluded"), state.get_meta().get("trades_source", ""))
                 st.rerun()
         confirm = r2.checkbox("I want to delete every trade for this owner")
