@@ -31,6 +31,33 @@ def bar_signed(x, y, title, text=None, height=360, yaxis="₹"):
 
 
 # =================================================================== TRADING ==
+DEFAULT_BENCH_SERIES = ["GOLD BEES", "SILVER BEES", "Nifty ROI", "BANK NIFTY ROI", "NIFTY IT ROI", "NASDAQ ROI", "DJI ROI"]
+
+
+def monthly_table_frame(summary: pd.DataFrame, k: dict) -> pd.DataFrame:
+    table = pd.DataFrame({
+        "Month": summary["Month"],
+        "Average of Capital": summary["Average of Capital"].map(inr),
+        "Net Profit": summary["Net Profit"].map(inr),
+        "Brokerage": summary["Brokerage"].map(inr),
+        "Monthly ROI": summary["Monthly ROI"].map(pct),
+        "Trades": summary["Trades"],
+        "Win rate %": summary["Win rate"].map(lambda v: pct(v, 1)),
+    })
+    cap_mean = pd.to_numeric(summary["Average of Capital"], errors="coerce").mean()
+    gp = summary["Net Profit"]
+    total_row = pd.DataFrame([{
+        "Month": "Grand Total",
+        "Average of Capital": inr(cap_mean) if pd.notna(cap_mean) else "—",
+        "Net Profit": inr(gp.sum()),
+        "Brokerage": inr(pd.to_numeric(summary["Brokerage"], errors="coerce").sum()),
+        "Monthly ROI": pct(summary["Monthly ROI"].sum(min_count=1)) if summary["Monthly ROI"].notna().any() else "—",
+        "Trades": int(summary["Trades"].sum()),
+        "Win rate %": pct(k["win_rate"], 1) if k.get("win_rate") is not None else "—",
+    }])
+    return pd.concat([table, total_row], ignore_index=True)
+
+
 with trading_tab:
     trades = state.get_frame("trades")
     if trades is None or trades.empty:
@@ -50,7 +77,7 @@ with trading_tab:
         periods_available = list(pd.Series(trade_periods.values, index=all_trades["month"].values).dropna()
                                  .groupby(level=0).first().sort_index().unique())
         year_pick = yf.multiselect("Year", periods_available, placeholder="All years",
-                                   help="Narrows the KPIs, monthly table and charts below. The yearly table always shows every year.")
+                                   help="Narrows the KPIs, monthly sections and breakdown. The yearly table always shows every year.")
         if year_pick:
             trades = all_trades[trade_periods.isin(year_pick).values]
         summary = monthly_summary(trades, capital)
@@ -74,69 +101,54 @@ with trading_tab:
             n = int(summary["Monthly ROI"].isna().sum())
             st.warning(f"{n} month(s) have no capital figure, so their ROI is blank. Add it on the Trading Book screen.")
 
-        # ---- yearly table (always all years)
+        # ---------------------------------------------------- yearly (chart, then table)
         st.subheader("Yearly performance")
         yearly = yearly_summary(full_summary, basis)
         if yearly.empty or yearly["Yearly ROI"].isna().all():
             st.info("Yearly ROI needs monthly capital. Enter it on the Trading Book screen.")
+        fig = go.Figure()
+        fig.add_bar(name="Net profit (₹)", x=yearly["Year"].astype(str), y=yearly["Net Profit"],
+                    marker_color=[GREEN if v >= 0 else RED for v in yearly["Net Profit"]],
+                    text=yearly["Net Profit"].map(inr), textposition="outside",
+                    hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+        fig.add_scatter(name="Yearly ROI (%)", x=yearly["Year"].astype(str), y=yearly["Yearly ROI"], yaxis="y2",
+                        mode="lines+markers+text", text=yearly["Yearly ROI"].map(lambda v: pct(v, 0)),
+                        textposition="top center", line=dict(color=BLUE, width=2),
+                        hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
+        fig.update_layout(title="Net profit and ROI by year", margin=MARGIN, height=380,
+                          xaxis=dict(type="category"), yaxis=dict(title="₹"),
+                          yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False, rangemode="tozero"),
+                          legend=dict(orientation="h", y=-0.2))
+        st.plotly_chart(fig, width="stretch", key="yearly_chart")
         yt = yearly_with_total(yearly)
         shown_y = pd.DataFrame({
-            "Year": yt["Year"],
-            "Investments": yt["Investments"].map(inr),
-            "Net Profit": yt["Net Profit"].map(inr),
-            "Yearly ROI": yt["Yearly ROI"].map(lambda v: pct(v, 0)),
-            "Brokerage": yt["Brokerage"].map(inr),
-            "Trades": yt["Trades"],
+            "Year": yt["Year"], "Investments": yt["Investments"].map(inr), "Net Profit": yt["Net Profit"].map(inr),
+            "Yearly ROI": yt["Yearly ROI"].map(lambda v: pct(v, 0)), "Brokerage": yt["Brokerage"].map(inr), "Trades": yt["Trades"],
         })
-        y1, y2 = st.columns([1, 1])
-        y1.dataframe(shown_y, hide_index=True, width="stretch", height=(len(shown_y) + 1) * 35 + 3)
-        y1.caption(("Financial years run April to March. " if basis == "financial" else "")
+        st.dataframe(shown_y, hide_index=True, width="stretch", height=(len(shown_y) + 1) * 35 + 3)
+        st.caption(("Financial years run April to March. " if basis == "financial" else "")
                    + "Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
                    "Grand Total averages Investments and ROI across years and sums the rest.")
-        with y2:
-            fig = go.Figure()
-            fig.add_bar(name="Net profit (₹)", x=yearly["Year"].astype(str), y=yearly["Net Profit"],
-                        marker_color=[GREEN if v >= 0 else RED for v in yearly["Net Profit"]],
-                        text=yearly["Net Profit"].map(inr), textposition="outside",
-                        hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-            fig.add_scatter(name="Yearly ROI (%)", x=yearly["Year"].astype(str), y=yearly["Yearly ROI"], yaxis="y2",
-                            mode="lines+markers+text", text=yearly["Yearly ROI"].map(lambda v: pct(v, 0)),
-                            textposition="top center", line=dict(color=BLUE, width=2),
-                            hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
-            fig.update_layout(title="Net profit and ROI by year", margin=MARGIN, height=380,
-                              xaxis=dict(type="category"), yaxis=dict(title="₹"),
-                              yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False, rangemode="tozero"),
-                              legend=dict(orientation="h", y=-0.2))
-            st.plotly_chart(fig, width="stretch", key="yearly_chart")
 
-        # ---- my returns vs benchmarks (monthly data, summed per period over the owner's months)
+        # ----------------------------------------- vs benchmarks (charts, then table)
         st.subheader("My returns vs benchmarks")
         bench_monthly = get_monthly()
         series_options = [c for c in bench_monthly.columns if c != "month"]
-        default_series = [c for c in ("Nifty ROI", "Nifty BEES ROI", "GOLD BEES") if c in series_options] or series_options[:3]
+        default_series = [c for c in DEFAULT_BENCH_SERIES if c in series_options] or series_options[:3]
         picked = st.multiselect("Benchmarks to compare", series_options, default=default_series, key="cmp_series")
         cmp = comparison_table(full_summary, bench_monthly, basis, picked or series_options)
         if cmp.empty or cmp[Z_COLUMN].isna().all():
             st.info("Monthly ROI needs capital figures (Trading Book → Monthly capital) before it can be compared.")
         else:
-            cmp_shown = cmp.copy()
-            display = cmp_shown.copy()
-            for col in display.columns[1:]:
-                display[col] = display[col].map(lambda v: pct(v) if pd.notna(v) else "")
-            st.dataframe(display, hide_index=True, width="stretch", height=(len(display) + 1) * 35 + 3)
-            st.caption(f"{Z_COLUMN} and every benchmark are the SUM of monthly % returns within the "
-                       + ("financial year (Apr–Mar). " if basis == "financial" else "calendar year. ")
-                       + "Benchmarks are summed over the same months you have ROI, so part-years compare like for like. "
-                       "Grand Total sums the listed periods. Benchmark months are maintained on the Benchmarks screen.")
             b1, b2 = st.columns(2)
             with b1:
-                body = cmp_shown[cmp_shown["Period"] != "Grand Total"]
+                body = cmp[cmp["Period"] != "Grand Total"]
                 fig = go.Figure()
                 for col in [Z_COLUMN] + [c for c in picked if c in body]:
                     fig.add_bar(name=col, x=body["Period"].astype(str), y=pd.to_numeric(body[col], errors="coerce"),
                                 hovertemplate="%{x}: %{y:.2f}%<extra>" + col + "</extra>")
-                fig.update_layout(barmode="group", title="Return by period (%)", yaxis_title="%", margin=MARGIN, height=380,
-                                  xaxis=dict(type="category"), legend=dict(orientation="h", y=-0.25))
+                fig.update_layout(barmode="group", title="Return by period (%)", yaxis_title="%", margin=MARGIN, height=400,
+                                  xaxis=dict(type="category"), legend=dict(orientation="h", y=-0.3))
                 st.plotly_chart(fig, width="stretch", key="cmp_bars")
             with b2:
                 cum = cumulative_series(full_summary, bench_monthly, picked)
@@ -145,79 +157,75 @@ with trading_tab:
                     fig.add_scatter(name=col, x=cum["Month"], y=cum[col], mode="lines+markers",
                                     line=dict(width=3 if col == Z_COLUMN else 1.5),
                                     hovertemplate="%{x}: %{y:.2f}%<extra>" + col + "</extra>")
-                fig.update_layout(title="Cumulative monthly return (%)", yaxis_title="%", margin=MARGIN, height=380,
-                                  legend=dict(orientation="h", y=-0.25))
+                fig.update_layout(title="Cumulative monthly return (%)", yaxis_title="%", margin=MARGIN, height=400,
+                                  legend=dict(orientation="h", y=-0.3))
                 st.plotly_chart(fig, width="stretch", key="cmp_cum")
+            display = cmp.copy()
+            for col in display.columns[1:]:
+                display[col] = display[col].map(lambda v: pct(v) if pd.notna(v) else "")
+            st.dataframe(display, hide_index=True, width="stretch", height=(len(display) + 1) * 35 + 3)
+            st.caption(f"{Z_COLUMN} and every benchmark are the SUM of monthly % returns within the "
+                       + ("financial year (Apr–Mar). " if basis == "financial" else "calendar year. ")
+                       + "Benchmarks are summed over the same months you have ROI, so part-years compare like for like. "
+                       "Grand Total sums the listed periods. Benchmark months are maintained on the Benchmarks screen.")
 
-        # ---- monthly detail (collapsed: lots of rows)
-        with st.expander("Monthly performance", expanded=False):
-            table = pd.DataFrame({
-                "Month": summary["Month"],
-                "Average of Capital": summary["Average of Capital"].map(inr),
-                "Net Profit": summary["Net Profit"].map(inr),
-                "Brokerage": summary["Brokerage"].map(inr),
-                "Monthly ROI": summary["Monthly ROI"].map(pct),
-                "Trades": summary["Trades"],
-                "Win rate %": summary["Win rate"].map(lambda v: pct(v, 1)),
-            })
-            cap_mean = pd.to_numeric(summary["Average of Capital"], errors="coerce").mean()
-            total_row = pd.DataFrame([{
-                "Month": "Grand Total",
-                "Average of Capital": inr(cap_mean) if pd.notna(cap_mean) else "—",
-                "Net Profit": inr(summary["Net Profit"].sum()),
-                "Brokerage": inr(pd.to_numeric(summary["Brokerage"], errors="coerce").sum()),
-                "Monthly ROI": pct(summary["Monthly ROI"].sum(min_count=1)) if summary["Monthly ROI"].notna().any() else "—",
-                "Trades": int(summary["Trades"].sum()),
-                "Win rate %": pct(k["win_rate"], 1) if k["win_rate"] is not None else "—",
-            }])
-            monthly_table = pd.concat([table, total_row], ignore_index=True)
+        # ------------------------------------- monthly (period selector, charts, table)
+        st.subheader("Monthly performance")
+        month_periods = list(pd.Series(period_label(summary["month"], basis).values, index=summary["month"].values)
+                             .dropna().groupby(level=0).first().sort_index().unique())
+        default_period = month_periods[-1:] if month_periods else []
+        m_pick = st.multiselect("Months to show", month_periods, default=default_period, key=f"monthly_periods_{basis}",
+                                placeholder="All months", help="Pick one or more years to keep the monthly table short.")
+        msel = summary[period_label(summary["month"], basis).isin(m_pick).values] if m_pick else summary
+        mk = kpis(msel, trades[period_label(trades["month"], basis).isin(m_pick).values] if m_pick else trades) if not msel.empty else {}
+        left, right = st.columns(2)
+        with left:
+            st.plotly_chart(bar_signed(msel["Month"], msel["Net Profit"], "Net profit by month", text=msel["Net Profit"].map(inr)),
+                            width="stretch", key="monthly_profit_chart")
+        with right:
+            roi = msel.dropna(subset=["Monthly ROI"])
+            fig = go.Figure(go.Scatter(x=roi["Month"], y=roi["Monthly ROI"], mode="lines+markers",
+                                       line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
+            fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
+            if roi.empty:
+                fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
+            st.plotly_chart(fig, width="stretch", key="monthly_roi_chart")
+        with st.expander(f"Monthly table ({len(msel)} months)", expanded=False):
+            monthly_table = monthly_table_frame(msel, mk)
             st.dataframe(monthly_table, hide_index=True, width="stretch", height=(len(monthly_table) + 1) * 35 + 3)
             st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
 
-            left, right = st.columns(2)
-            with left:
-                st.plotly_chart(bar_signed(summary["Month"], summary["Net Profit"], "Net profit by month",
-                                           text=summary["Net Profit"].map(inr)), width="stretch")
-            with right:
-                roi = summary.dropna(subset=["Monthly ROI"])
-                fig = go.Figure(go.Scatter(x=roi["Month"], y=roi["Monthly ROI"], mode="lines+markers",
-                                           line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
-                fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
-                if roi.empty:
-                    fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
-                st.plotly_chart(fig, width="stretch")
-
-        # ---- capital & charges (collapsed)
-        with st.expander("Capital and charges", expanded=False):
-            p1, p2, p3 = st.columns([1, 1, 2])
-            cap_t = capital_table(summary)
+        # --------------------------------------- capital & charges (chart, then tables)
+        st.subheader("Capital and charges")
+        brk = pd.to_numeric(msel["Brokerage"], errors="coerce").fillna(0)
+        fig = go.Figure(go.Bar(x=msel["Month"], y=brk, marker_color=BLUE, text=brk.map(inr), textposition="outside",
+                               hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
+        fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=340)
+        st.plotly_chart(fig, width="stretch", key="brokerage_chart")
+        with st.expander(f"Capital and brokerage tables ({len(msel)} months)", expanded=False):
+            p1, p2 = st.columns(2)
+            cap_t = capital_table(msel)
             cap_t["Average of Capital"] = cap_t["Average of Capital"].map(inr)
             p1.dataframe(cap_t, hide_index=True, width="stretch", height=(len(cap_t) + 1) * 35 + 3)
-            brk_t = brokerage_table(summary)
+            brk_t = brokerage_table(msel)
             brk_t["Brokerage"] = brk_t["Brokerage"].map(inr)
             p2.dataframe(brk_t, hide_index=True, width="stretch", height=(len(brk_t) + 1) * 35 + 3)
-            with p3:
-                brk = pd.to_numeric(summary["Brokerage"], errors="coerce").fillna(0)
-                fig = go.Figure(go.Bar(x=summary["Month"], y=brk, marker_color=BLUE, text=brk.map(inr), textposition="outside",
-                                       hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
-                fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=380)
-                st.plotly_chart(fig, width="stretch")
 
-        # ---- breakdown
+        # ------------------------------------------------------ breakdown (chart, then table)
         dimensions = [c for c in ("stock", "type") if c in trades]
         if dimensions:
             st.subheader("Breakdown")
             by = st.selectbox("Group by", dimensions, format_func=str.title)
             bd = breakdown(trades, by)
+            top = bd.head(12)
+            st.plotly_chart(bar_signed(top[by.title()].astype(str), top["Net Profit"], f"Net profit by {by} (top 12)", height=340),
+                            width="stretch", key="breakdown_chart")
             shown_bd = bd.copy()
             shown_bd["Net Profit"] = shown_bd["Net Profit"].map(inr)
             shown_bd["Win rate"] = shown_bd["Win rate"].map(lambda v: pct(v, 1))
             if "Avg trade ROI" in shown_bd:
                 shown_bd["Avg trade ROI"] = shown_bd["Avg trade ROI"].map(pct)
             st.dataframe(shown_bd, hide_index=True, width="stretch", height=min(len(shown_bd) + 1, 13) * 35 + 3)
-            top = bd.head(12)
-            st.plotly_chart(bar_signed(top[by.title()].astype(str), top["Net Profit"], f"Net profit by {by} (top 12)", height=340),
-                            width="stretch")
 
         with st.expander("Trade log"):
             f1, f2 = st.columns(2)
@@ -265,17 +273,6 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
     c4.metric("Gifted", inr(gifts, prefix="₹"), help="Sum of GIFT AMOUNT in the holdings shown.")
 
     st.subheader(heading)
-    shown = h.copy()
-    shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
-    shown["Buy"] = shown["Buy"].map(lambda v: inr(v) if pd.notna(v) else "—")
-    shown["Cost"] = shown["Cost"].map(inr)
-    shown["% Investment"] = shown["% Investment"].map(pct)
-    shown["Gift"] = shown["Gift"].map(lambda v: inr(v) if v else "")
-    total_row = pd.DataFrame([{"Stock": "Grand Total", "Sector": "", "Qty": "", "Buy": "",
-                               "Cost": inr(total), "% Investment": "100.00", "Gift": inr(gifts) if gifts else ""}])
-    shown = pd.concat([shown, total_row], ignore_index=True)
-    st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 22) * 35 + 3)
-
     left, right = st.columns(2)
     with left:
         fig = go.Figure(go.Pie(labels=alloc["Sector"], values=alloc["Cost"], hole=0.45,
@@ -289,6 +286,17 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
                                hovertemplate="%{x}<br>%{y:.2f}% · ₹%{customdata:,.0f}<extra></extra>"))
         fig.update_layout(title="Top holdings (% of this class)", yaxis_title="%", margin=MARGIN, height=380)
         st.plotly_chart(fig, width="stretch", key=f"{key}_top_bar")
+
+    shown = h.copy()
+    shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
+    shown["Buy"] = shown["Buy"].map(lambda v: inr(v) if pd.notna(v) else "—")
+    shown["Cost"] = shown["Cost"].map(inr)
+    shown["% Investment"] = shown["% Investment"].map(pct)
+    shown["Gift"] = shown["Gift"].map(lambda v: inr(v) if v else "")
+    total_row = pd.DataFrame([{"Stock": "Grand Total", "Sector": "", "Qty": "", "Buy": "",
+                               "Cost": inr(total), "% Investment": "100.00", "Gift": inr(gifts) if gifts else ""}])
+    shown = pd.concat([shown, total_row], ignore_index=True)
+    st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 22) * 35 + 3)
 
     sec = alloc.copy()
     sec["Cost"] = sec["Cost"].map(inr)
@@ -347,7 +355,7 @@ with invest_tab:
             summary = asset_class_summary(view)
             total_all = float(view["cost"].sum())
             st.subheader(f"{owner} · Investment Book" + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
-            o1, o2 = st.columns([1, 1])
+            o2, o1 = st.columns([1, 1])
             with o1:
                 shown = summary.copy()
                 shown["Cost"] = shown["Cost"].map(inr)

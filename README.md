@@ -11,7 +11,7 @@ owners, built from Excel uploads or simple entry forms. Python + Streamlit.
 | Trading Book | Trades by upload or an *Add trade* form; monthly capital |
 | Benchmarks | Monthly % returns of indices/ETFs (Nifty, Nifty BEES, Bank Nifty, NIFTY IT, NASDAQ, DJI, MAFANG, Gold BEES, Silver BEES), shared by all owners; grid or upload; ships with Apr-2022 → Oct-2026 built in |
 | Investment Book | Holdings by upload or an *Add entry* form: month, sector, stock, qty, buy, gift |
-| Dashboard Reports → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs; yearly table (Investments = avg capital, Net Profit, Yearly ROI, with Grand Total); *My returns vs benchmarks* per year/FY with cumulative chart; then collapsed Monthly performance and Capital & charges; breakdown by stock/strategy; trade log; Excel download |
+| Dashboard Reports → Trading | Year basis toggle (calendar Jan–Dec or financial Apr–Mar) and Year filter; KPIs; Yearly performance (chart, then table); *My returns vs benchmarks* (default: Gold BEES, Silver BEES, Nifty, Bank Nifty, NIFTY IT, NASDAQ, DJI; charts, then table); Monthly performance with its own *Months to show* selector (charts open, table collapsed); Capital and charges (chart open, tables collapsed); breakdown; trade log; Excel download. Charts sit above tables throughout. |
 | Dashboard Reports → Investments | Year / sector / month filters; asset-class overview (Equity, ETF, Equity MF, Debt) with a sub-tab per class: holdings by stock with % Investment, sector allocation, gifts; Excel download |
 
 A **Portfolio owner** selector in the sidebar switches between owners. Each

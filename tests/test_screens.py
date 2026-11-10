@@ -155,7 +155,8 @@ def test_default_owner_is_used_when_nobody_signed_in(tmp_path, monkeypatch):
     at = app("screens/reports.py")
     assert not at.exception, [e.value for e in at.exception]
     headers = [h.value for h in at.subheader]
-    assert headers.index("Yearly performance") < headers.index("Breakdown")
-    assert "Monthly performance" not in headers                     # it is an expander now
-    assert any(e.label == "Monthly performance" for e in at.expander)
-    assert any(e.label == "Capital and charges" for e in at.expander)
+    expected = ["Yearly performance", "My returns vs benchmarks", "Monthly performance", "Capital and charges", "Breakdown"]
+    assert [h for h in headers if h in expected] == expected        # yearly first, monthly after
+    assert any(e.label.startswith("Monthly table") for e in at.expander)        # table collapsed, charts open
+    assert any(e.label.startswith("Capital and brokerage tables") for e in at.expander)
+    assert by_label(at.multiselect, "Benchmarks to compare").value[:3] == ["GOLD BEES", "SILVER BEES", "Nifty ROI"]
