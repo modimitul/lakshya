@@ -362,6 +362,18 @@ with invest_tab:
                 st.rerun()
 
         st.subheader(f"{owner} · Investment Book" + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
+        n_sell_rows = int((classified_all["side"] == "sell").sum()) if "side" in classified_all else 0
+        n_buy_rows = len(classified_all) - n_sell_rows
+        buy_cost_total = float(classified_all.loc[classified_all["side"] != "sell", "cost"].sum()) if "side" in classified_all else float(classified_all["cost"].sum())
+        st.caption(f"On file for {owner}: {n_buy_rows:,} purchase rows worth {inr(buy_cost_total, prefix='₹')}"
+                   + (f" and {n_sell_rows:,} sale rows" if n_sell_rows else "")
+                   + ". If an upload is missing from these numbers, it never imported — re-check Investment Book → Upload → Import.")
+        if "qty" in classified_all.columns:
+            buys_all = classified_all[classified_all["side"] != "sell"] if "side" in classified_all else classified_all
+            untracked = int((~(pd.to_numeric(buys_all["qty"], errors="coerce") > 0)).sum())
+            if untracked and n_sell_rows:
+                st.caption(f"{untracked:,} purchase rows have no usable quantity: they stay as holdings at full cost, "
+                           "but sales cannot be matched against them.")
         inv_sheets = {}
         summary = asset_class_summary(view)
         if view.empty:

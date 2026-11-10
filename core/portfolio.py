@@ -17,7 +17,7 @@ PORTFOLIO_ALIASES: dict[str, list[str]] = {
     "month": ["month", "date", "buy date", "purchase month", "purchase date"],
     "sector": ["sectors", "sector", "industry", "theme"],
     "stock": ["stock", "symbol", "scrip", "company", "name"],
-    "qty": ["qty", "quantity", "shares", "units"],
+    "qty": ["qty", "qty.", "quantity", "net qty", "net quantity", "quantity available", "shares", "units"],
     "buy": ["buy", "buy price", "avg price", "average price", "price"],
     "cost": ["cost", "cost value", "investment", "amount", "invested"],
     "pct_investment": ["% investment", "pct investment", "% of investment", "weight", "weight %"],
@@ -149,8 +149,13 @@ def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         return out, pd.DataFrame()
     buys = entries[entries["side"] != "sell"].copy()
     sells = entries[entries["side"] == "sell"].copy()
-    buys["qty_left"] = pd.to_numeric(buys["qty"], errors="coerce").fillna(0).astype(float)
-    buys["unit_cost"] = pd.to_numeric(buys["cost"], errors="coerce") / pd.to_numeric(buys["qty"], errors="coerce").where(lambda q: q > 0)
+    qty_num = pd.to_numeric(buys["qty"], errors="coerce") if "qty" in buys else pd.Series(float("nan"), index=buys.index)
+    # A buy without a usable quantity cannot be FIFO-matched, but it is still a holding:
+    # it is never consumed by a sale and is returned unchanged in `remaining`.
+    buys["_matchable"] = (qty_num > 0).fillna(False)
+    buys["qty_left"] = qty_num.where(buys["_matchable"], 0.0).astype(float)
+    buys["_consumed_cost"] = 0.0
+    buys["unit_cost"] = pd.to_numeric(buys["cost"], errors="coerce") / qty_num.where(qty_num > 0)
     buys = buys.sort_values(["month", "stock"], na_position="last")
     sale_rows = []
     for _, sale in sells.sort_values("month", na_position="last").iterrows():
@@ -159,7 +164,7 @@ def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         gross = qty_to_match * price
         charges = float(sale["charges"]) if "charges" in sale and pd.notna(sale["charges"]) else 0.0
         matched_cost, weighted_years, matched_qty, first_buy = 0.0, 0.0, 0.0, None
-        lots = buys[(buys["stock"] == sale["stock"]) & (buys["qty_left"] > 0)]
+        lots = buys[buys["_matchable"] & (buys["stock"] == sale["stock"]) & (buys["qty_left"] > 0)]
         if pd.notna(sale["month"]):
             lots = lots[(lots["month"].isna()) | (lots["month"] <= sale["month"])]
         for idx, lot in lots.iterrows():
@@ -172,6 +177,7 @@ def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
                 weighted_years += take * unit * _years_between(lot["month"], sale["month"])
             first_buy = lot["month"] if first_buy is None else min(first_buy, lot["month"]) if pd.notna(lot["month"]) else first_buy
             buys.at[idx, "qty_left"] = lot["qty_left"] - take
+            buys.at[idx, "_consumed_cost"] = float(lot["_consumed_cost"]) + take * unit
             matched_qty += take
             qty_to_match -= take
         net_value = gross - charges
@@ -188,10 +194,15 @@ def match_sales(entries: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             "sale_value": net_value, "cost": matched_cost, "profit": profit, "roi": roi,
             "first_buy": first_buy, "years": years, "cagr": cagr, "unmatched_qty": qty_to_match,
         })
-    remaining = buys[buys["qty_left"] > 0].copy()
-    remaining["qty"] = remaining["qty_left"]
-    remaining["cost"] = remaining["qty_left"] * remaining["unit_cost"].fillna(0)
-    remaining = remaining.drop(columns=["qty_left", "unit_cost"])
+    keep = (~buys["_matchable"]) | (buys["qty_left"] > 0)
+    remaining = buys[keep].copy()
+    touched = remaining["_matchable"]
+    remaining.loc[touched, "qty"] = remaining.loc[touched, "qty_left"]
+    # Reduce cost by what the sales consumed; an untouched lot keeps its original cost
+    # exactly (including lots whose cost or buy price is blank).
+    cost_num = pd.to_numeric(remaining["cost"], errors="coerce")
+    remaining.loc[touched, "cost"] = (cost_num - remaining["_consumed_cost"]).clip(lower=0).where(cost_num.notna())[touched]
+    remaining = remaining.drop(columns=["qty_left", "unit_cost", "_matchable", "_consumed_cost"])
     return remaining.reset_index(drop=True), pd.DataFrame(sale_rows)
 
 

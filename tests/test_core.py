@@ -488,3 +488,76 @@ def test_yearly_sales_summary_groups_by_sale_year():
     # 2026: 20 shares from the remaining 30 @3000
     assert ysum.loc[2026, "Cost"] == pytest.approx(20 * 3000)
     assert ysum.loc[2026, "CAGR %"] is not None
+
+
+def test_buys_without_quantity_are_never_treated_as_sold():
+    from core.portfolio import clean_portfolio, match_sales
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Jan-22", "Sep-23", "Feb-26"],
+        "SECTORS": ["MUTUAL FUND", "RETAIL", "CHEMICALS", "CHEMICALS"],
+        "STOCK": ["PP FLEXI CAP SIP", "DMART", "SRF", "SRF"],
+        "QTY": [None, 100, 50, 20], "BUY": [None, 3660.44, 2179.17, 2900],
+        "COST": [250000, 366044, 108958.5, None],
+        "SIDE": ["BUY", "BUY", "BUY", "SELL"], "CHARGES": [None, None, None, 45],
+    })
+    remaining, sales = match_sales(clean_portfolio(raw).entries)
+    held = remaining.set_index("stock")["cost"]
+    assert held["PP FLEXI CAP SIP"] == 250000            # qty-less buy survives at full cost
+    assert held["DMART"] == 366044                       # untouched lot keeps its exact cost
+    assert held["SRF"] == pytest.approx(108958.5 * 30 / 50)
+    assert len(remaining) == 3 and len(sales) == 1
+    assert sales.iloc[0]["cost"] == pytest.approx(108958.5 * 20 / 50)
+
+
+# -------------------------------------------------------------- grid edits ----
+def test_recompute_trades_after_square_off_edit():
+    from core.parse import apply_grid_edits, recompute_trades
+    trades = clean(pd.DataFrame({
+        "Buy Date": ["2026-04-06", "2026-04-07"], "Month": ["2026-04-01", "2026-04-01"],
+        "STOCK": ["TCS", "INFY"], "Strike Price": [3400, 1500], "TYPE": ["Naked Put Sell", "Naked Put Sell"],
+        "QTY": [175, 400], "Buy": [52.13, 20.0], "Sell": [0.0, 15.0],
+        "Brokerage & Other Charges": [0, 40], "Margin": [48000, 50000], "Lot": [1, 1],
+    })).trades
+    order = trades.index
+    edited = trades.copy()
+    edited["sell"] = edited["sell"].astype("float64")
+    edited["brokerage"] = edited["brokerage"].astype("float64")   # data_editor returns float columns
+    edited.insert(0, "Remove", False)
+    edited.at[order[0], "sell"] = 58.88          # square off the open TCS position
+    edited.at[order[0], "brokerage"] = 48.5
+    updated, changed = apply_grid_edits(trades, order, edited, ["sell", "brokerage", "stock", "qty", "buy"])
+    assert changed == [order[0]]
+    updated = recompute_trades(updated, changed)
+    row = updated.loc[order[0]]
+    assert row["pl"] == pytest.approx(175 * (58.88 - 52.13))
+    assert row["gross_profit"] == pytest.approx(row["pl"] - 48.5)
+    assert row["roi"] == pytest.approx(row["pl"] / 48000 * 100)
+    assert row["entry_kind"] == "trade"
+    # untouched row keeps its original figures exactly
+    assert updated.loc[order[1], "gross_profit"] == trades.loc[order[1], "gross_profit"]
+
+
+def test_cell_changed_handles_na_dates_and_floats():
+    import datetime as dt
+    from core.parse import cell_changed
+    assert not cell_changed(float("nan"), None)
+    assert not cell_changed(pd.NaT, None)
+    assert cell_changed(None, 5)
+    assert not cell_changed(52.130000001, 52.13)
+    assert cell_changed(pd.Timestamp("2026-04-06"), dt.date(2026, 4, 7))
+    assert not cell_changed(pd.Timestamp("2026-04-06"), dt.date(2026, 4, 6))
+    assert cell_changed("buy", "sell") and not cell_changed("buy", "buy")
+
+
+def test_match_sales_keeps_buys_without_quantity():
+    from core.portfolio import clean_portfolio, match_sales
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Jan-24", "Mar-26"], "SECTORS": ["RETAIL", "IT", "RETAIL"],
+        "STOCK": ["DMART", "TCS", "DMART"], "QTY": [100, None, 100], "BUY": [3000, None, 4000],
+        "COST": [300000, 500000, None], "SIDE": ["BUY", "BUY", "SELL"], "CHARGES": [None, None, 0],
+    })
+    remaining, sales = match_sales(clean_portfolio(raw).entries)
+    held = remaining.set_index("stock")
+    assert "TCS" in held.index and held.loc["TCS", "cost"] == 500000     # no qty → still a holding
+    assert "DMART" not in held.index                                     # fully sold
+    assert sales.iloc[0]["cost"] == pytest.approx(300000)

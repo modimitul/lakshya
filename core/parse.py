@@ -703,3 +703,113 @@ def replace_covered_months(existing: pd.DataFrame | None, incoming: pd.DataFrame
     kept = existing[~covered]
     merged = pd.concat([kept, incoming], ignore_index=True)
     return merged, int(covered.sum()), months
+
+
+# ----------------------------------------------------------- manual edits --
+def cell_changed(old, new) -> bool:
+    """True when an edited grid cell differs from the stored value (NaN/NaT-safe)."""
+    def is_na(v):
+        try:
+            return v is None or bool(pd.isna(v))
+        except (TypeError, ValueError):
+            return False
+    if is_na(old) and is_na(new):
+        return False
+    if is_na(old) != is_na(new):
+        return True
+    if hasattr(old, "year") or hasattr(new, "year"):
+        try:
+            return pd.Timestamp(old) != pd.Timestamp(new)
+        except (TypeError, ValueError):
+            return str(old) != str(new)
+    try:
+        return abs(float(old) - float(new)) > 1e-9
+    except (TypeError, ValueError):
+        return str(old) != str(new)
+
+
+def apply_grid_edits(base: pd.DataFrame, order, edited: pd.DataFrame, columns: list[str]):
+    """Copy edited values from a data_editor grid back onto base.loc[order].
+
+    `edited` row i corresponds to base.loc[order[i]]. Returns (updated, changed index labels).
+    """
+    updated = base.copy()
+    changed = []
+    for pos, idx in enumerate(list(order)):
+        row_changed = False
+        for col in columns:
+            if col not in edited.columns:
+                continue
+            new = edited.iloc[pos][col]
+            old = base.at[idx, col] if col in base.columns else None
+            if cell_changed(old, new):
+                if col in base.columns and pd.api.types.is_datetime64_any_dtype(base[col]):
+                    new = pd.NaT if new is None or pd.isna(new) else pd.Timestamp(new)
+                try:
+                    updated.at[idx, col] = new
+                except (TypeError, ValueError):
+                    # e.g. a decimal typed into an integer column: widen the column first
+                    if col in updated.columns and pd.api.types.is_integer_dtype(updated[col]) and isinstance(new, (int, float)):
+                        updated[col] = updated[col].astype("float64")
+                    else:
+                        updated[col] = updated[col].astype("object")
+                    updated.at[idx, col] = new
+                row_changed = True
+        if row_changed:
+            changed.append(idx)
+    return updated, changed
+
+
+def recompute_trades(df: pd.DataFrame, rows: list) -> pd.DataFrame:
+    """Recalculate derived columns for the given rows after manual grid edits:
+    cost/sale value, P&L, gross profit (P&L − brokerage), investment, ROI, month
+    (from Buy date when blank) and charge classification."""
+    import math
+
+    from .strategies import CHARGE_TYPE, canonical as canonical_type
+
+    out = df.copy()
+
+    def num(col, idx):
+        if col not in out.columns:
+            return float("nan")
+        try:
+            v = out.at[idx, col]
+            return float("nan") if pd.isna(v) else float(v)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    for idx in rows:
+        qty, buy, sell = num("qty", idx), num("buy", idx), num("sell", idx)
+        brokerage = num("brokerage", idx)
+        brokerage = 0.0 if math.isnan(brokerage) else brokerage
+        cost = qty * buy if not math.isnan(qty) and not math.isnan(buy) else float("nan")
+        sale = qty * sell if not math.isnan(qty) and not math.isnan(sell) else float("nan")
+        if "cost_value" in out.columns and not math.isnan(cost):
+            out.at[idx, "cost_value"] = cost
+        if "sale_value" in out.columns and not math.isnan(sale):
+            out.at[idx, "sale_value"] = sale
+        if math.isnan(sale) and math.isnan(cost):
+            pl = float("nan")
+        else:
+            pl = (0.0 if math.isnan(sale) else sale) - (0.0 if math.isnan(cost) else cost)
+        if "pl" in out.columns and not math.isnan(pl):
+            out.at[idx, "pl"] = pl
+        if "gross_profit" in out.columns:
+            out.at[idx, "gross_profit"] = (0.0 if math.isnan(pl) else pl) - brokerage
+        margin, lot = num("margin", idx), num("lot", idx)
+        inv = margin * lot if not math.isnan(margin) and not math.isnan(lot) else float("nan")
+        if "inv_amount" in out.columns and not math.isnan(inv):
+            out.at[idx, "inv_amount"] = inv
+        if "roi" in out.columns:
+            out.at[idx, "roi"] = pl / inv * 100 if (not math.isnan(pl) and not math.isnan(inv) and inv > 0) else float("nan")
+        if "type" in out.columns and pd.notna(out.at[idx, "type"]):
+            out.at[idx, "type"] = canonical_type(out.at[idx, "type"])
+        if "month" in out.columns and "buy_date" in out.columns:
+            if pd.isna(out.at[idx, "month"]) and pd.notna(out.at[idx, "buy_date"]):
+                out.at[idx, "month"] = pd.Timestamp(out.at[idx, "buy_date"]).to_period("M").to_timestamp()
+        if "entry_kind" in out.columns:
+            typ = str(out.at[idx, "type"]) if "type" in out.columns and pd.notna(out.at[idx, "type"]) else ""
+            zero_trade = (math.isnan(pl) or pl == 0) and (math.isnan(buy) or buy == 0) and (math.isnan(sell) or sell == 0)
+            out.at[idx, "entry_kind"] = "charge" if (typ == CHARGE_TYPE or (zero_trade and brokerage > 0)) else "trade"
+    return out

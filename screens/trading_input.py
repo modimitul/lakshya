@@ -20,6 +20,8 @@ from core.strategies import (
 )
 from core.parse import (
     ParseResult,
+    apply_grid_edits,
+    recompute_trades,
     dedupe_trades,
     load_capital_frame,
     replace_covered_months,
@@ -206,26 +208,47 @@ else:
 # Review / delete list
 if trades is not None and not trades.empty:
     with st.expander(f"Trades saved for {owner} ({len(trades):,})", expanded=(mode == "Add trades manually")):
-        show_cols = [c for c in ("buy_date", "month", "stock", "type", "strike", "qty", "buy", "sell", "brokerage", "gross_profit", "roi") if c in trades]
+        st.caption("Cells are editable: when a trade is squared off, fill **Sell**, **Sale date** and **Brokerage** on its row and "
+                   "press **Save changes** — P&L, gross profit and ROI are recalculated for the rows you touched. "
+                   "Tick **Remove** to delete rows. Month and the computed columns are read-only.")
         order = trades.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
-        view = trades.loc[order, show_cols].copy()
-        for col in ("buy_date", "month"):
-            if col in view:
-                view[col] = view[col].dt.strftime("%d-%b-%y" if col == "buy_date" else "%b-%y")
-        view.insert(0, "Remove", False)
+        editable_cols = [c for c in ("buy_date", "stock", "type", "strike", "qty", "buy", "sale_date", "sell",
+                                     "brokerage", "margin", "lot") if c in trades.columns]
+        computed_cols = [c for c in ("month", "gross_profit", "roi") if c in trades.columns]
+        grid = trades.loc[order, editable_cols + computed_cols].copy()
+        grid.insert(0, "Remove", False)
+        type_options = sorted(set(strategy_names()) | set(trades["type"].dropna().astype(str))) if "type" in trades.columns else strategy_names()
         edited = st.data_editor(
-            view, hide_index=True, width="stretch", height=min(len(view) + 1, 12) * 35 + 3,
-            disabled=show_cols, key=f"trade_list_{state.version('capital_version')}",
-            column_config={"Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
-                           "buy_date": "Buy date", "month": "Month", "stock": "Stock", "type": "Type", "qty": "Qty",
-                           "strike": st.column_config.NumberColumn("Strike", format="%.0f"),
-                           "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
-                           "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
-                           "brokerage": st.column_config.NumberColumn("Brokerage", format="%.2f"),
-                           "gross_profit": st.column_config.NumberColumn("Gross profit", format="%.0f"),
-                           "roi": st.column_config.NumberColumn("ROI %", format="%.2f")},
+            grid, hide_index=True, width="stretch", height=min(len(grid) + 1, 14) * 35 + 3,
+            disabled=["month", "gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}",
+            column_config={
+                "Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
+                "buy_date": st.column_config.DateColumn("Buy date", format="DD-MMM-YY"),
+                "sale_date": st.column_config.DateColumn("Sale date", format="DD-MMM-YY"),
+                "month": st.column_config.DateColumn("Month", format="MMM YY", disabled=True),
+                "stock": st.column_config.TextColumn("Stock"),
+                "type": st.column_config.SelectboxColumn("Type", options=type_options),
+                "strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+                "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
+                "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
+                "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
+                "brokerage": st.column_config.NumberColumn("Brokerage", format="%.2f"),
+                "margin": st.column_config.NumberColumn("Margin/lot", format="%.0f"),
+                "lot": st.column_config.NumberColumn("Lots", format="%.0f"),
+                "gross_profit": st.column_config.NumberColumn("Gross profit", format="%.0f"),
+                "roi": st.column_config.NumberColumn("ROI %", format="%.2f"),
+            },
         )
-        r1, r2 = st.columns([1, 3])
+        r0, r1, r2 = st.columns([1, 1, 2])
+        if r0.button("Save changes", type="primary", key="trades_save_edits"):
+            updated, changed = apply_grid_edits(trades, order, edited, editable_cols)
+            if not changed:
+                st.info("No cells were changed.")
+            else:
+                updated = recompute_trades(updated, changed)
+                save_trades(updated, state.get_frame("excluded"), state.get_meta().get("trades_source", "manual entry"))
+                st.success(f"Saved edits to {len(changed)} row(s); profit and ROI recalculated.")
+                st.rerun()
         if r1.button("Remove selected"):
             remove_mask = edited["Remove"].fillna(False).astype(bool).to_numpy()
             if not remove_mask.any():

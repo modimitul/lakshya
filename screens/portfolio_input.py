@@ -7,6 +7,7 @@ import streamlit as st
 
 from core import state
 from core.formatting import inr
+from core.parse import apply_grid_edits
 from core.portfolio import (
     COMMON_SECTORS,
     PortfolioResult,
@@ -196,43 +197,87 @@ if entries is not None and not entries.empty:
     with st.expander(f"Entries saved for {owner} ({n_buys:,} buys"
                      + (f", {n_sells:,} sells" if n_sells else "") + f", {inr(total, prefix='₹')} purchased)",
                      expanded=(mode in ("Add entries manually", "Record a sale"))):
-        if n_sells:
-            st.caption("A sale is kept as its own SELL row next to the original BUY rows — that is the audit trail, "
-                       "not a duplicate. The dashboard matches sells to buys FIFO and shows only what remains as holdings.")
-        order = entries.sort_values("month", ascending=False, na_position="last").index
-        view = entries.loc[order].copy()
-        view["month"] = view["month"].dt.strftime("%b-%y")
-        if "side" in view:
-            view["side"] = view["side"].astype("string").str.upper()
-        buys_only = view["side"] != "sell" if "side" in view else pd.Series(True, index=view.index)
-        view["% Investment"] = (view["cost"] / total * 100).where(buys_only) if total else pd.NA
-        view = view.rename(columns={"month": "Month", "sector": "Sector", "stock": "Stock", "qty": "Qty", "side": "Side",
-                                    "buy": "Price", "cost": "Value", "gift": "Gift", "charges": "Charges", "source_sheet": "Sheet"})
-        view.insert(0, "Remove", False)
-        edited = st.data_editor(
-            view, hide_index=True, width="stretch", height=min(len(view) + 1, 12) * 35 + 3,
-            disabled=[c for c in view.columns if c != "Remove"],
-            key=f"portfolio_list_{state.version('portfolio_version')}",
-            column_config={"Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
-                           "Price": st.column_config.NumberColumn(format="%.2f"),
-                           "Value": st.column_config.NumberColumn(format="%.0f"),
-                           "Charges": st.column_config.NumberColumn(format="%.0f"),
-                           "Gift": st.column_config.NumberColumn(format="%.0f"),
-                           "% Investment": st.column_config.NumberColumn(format="%.2f")},
-        )
-        r1, r2 = st.columns([1, 3])
-        if r1.button("Remove selected", key="portfolio_remove"):
-            remove_mask = edited["Remove"].fillna(False).astype(bool).to_numpy()
-            if not remove_mask.any():
-                st.info("Tick at least one row first.")
+        view_mode = st.radio("View", ["All entries (editable)", "Remaining holdings (after sales)"],
+                             horizontal=True, key="pf_entries_view", label_visibility="collapsed")
+        if view_mode.startswith("Remaining"):
+            remaining, _ = match_sales(entries)
+            if remaining.empty:
+                st.info("Nothing is currently held: every purchase has been sold.")
             else:
-                remaining = entries.drop(index=order[remove_mask]).reset_index(drop=True)
-                save_portfolio(remaining if not remaining.empty else None, state.get_meta().get("portfolio_source", ""))
+                shown = remaining.sort_values("month", ascending=False, na_position="last").copy()
+                shown = pd.DataFrame({
+                    "Bought": shown["month"].dt.strftime("%b-%y"),
+                    "Sector": shown["sector"], "Stock": shown["stock"],
+                    "Qty held": shown["qty"].map(lambda v: inr(v) if pd.notna(v) else "—"),
+                    "Cost held": shown["cost"].map(lambda v: inr(v) if pd.notna(v) else "—"),
+                })
+                st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 14) * 35 + 3)
+                st.caption("What is still held per purchase lot after FIFO-matching the sales. "
+                           "A fully sold lot disappears from this view; edit or remove rows in the other view.")
+        else:
+            if n_sells:
+                st.caption("A sale is kept as its own SELL row next to the original BUY rows — that is the audit trail, "
+                           "not a duplicate. Switch to **Remaining holdings** to see what is left after sales.")
+            st.caption("Cells are editable; press **Save changes** when done. For edited rows, Value is recalculated "
+                       "as Qty × Price and the month is snapped to its first day.")
+            order = entries.sort_values("month", ascending=False, na_position="last").index
+            editable_cols = [c for c in ("month", "sector", "stock", "side", "qty", "buy", "charges", "gift") if c in entries.columns]
+            grid = entries.loc[order, editable_cols].copy()
+            if "side" in grid:
+                grid["side"] = grid["side"].astype("string").str.upper()
+            grid.insert(0, "Remove", False)
+            sector_options = sorted(set(COMMON_SECTORS) | set(entries["sector"].dropna().astype(str))) if "sector" in entries.columns else COMMON_SECTORS
+            edited = st.data_editor(
+                grid, hide_index=True, width="stretch", height=min(len(grid) + 1, 14) * 35 + 3,
+                key=f"portfolio_list_{state.version('portfolio_version')}",
+                column_config={
+                    "Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
+                    "month": st.column_config.DateColumn("Month", format="MMM YY"),
+                    "sector": st.column_config.SelectboxColumn("Sector", options=sector_options),
+                    "stock": st.column_config.TextColumn("Stock"),
+                    "side": st.column_config.SelectboxColumn("Side", options=["BUY", "SELL"],
+                                                             help="SELL rows are matched FIFO against earlier BUY rows of the same stock."),
+                    "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
+                    "buy": st.column_config.NumberColumn("Price", format="%.2f"),
+                    "charges": st.column_config.NumberColumn("Charges", format="%.2f"),
+                    "gift": st.column_config.NumberColumn("Gift", format="%.0f"),
+                },
+            )
+            r0, r1, r2 = st.columns([1, 1, 2])
+            if r0.button("Save changes", type="primary", key="portfolio_save_edits"):
+                normalised = edited.copy()
+                if "side" in normalised:
+                    normalised["side"] = normalised["side"].astype("string").str.lower()
+                updated, changed = apply_grid_edits(entries, order, normalised, editable_cols)
+                if not changed:
+                    st.info("No cells were changed.")
+                else:
+                    for idx in changed:
+                        if pd.notna(updated.at[idx, "month"]):
+                            updated.at[idx, "month"] = pd.Timestamp(updated.at[idx, "month"]).to_period("M").to_timestamp()
+                        qty_v = pd.to_numeric(pd.Series([updated.at[idx, "qty"]]), errors="coerce").iloc[0] if "qty" in updated.columns else None
+                        price_v = pd.to_numeric(pd.Series([updated.at[idx, "buy"]]), errors="coerce").iloc[0] if "buy" in updated.columns else None
+                        if pd.notna(qty_v) and pd.notna(price_v) and "cost" in updated.columns:
+                            updated.at[idx, "cost"] = float(qty_v) * float(price_v)
+                        if "sector" in updated.columns and pd.notna(updated.at[idx, "sector"]):
+                            updated.at[idx, "sector"] = str(updated.at[idx, "sector"]).upper()
+                        if "stock" in updated.columns and pd.notna(updated.at[idx, "stock"]):
+                            updated.at[idx, "stock"] = str(updated.at[idx, "stock"]).strip().upper()
+                    save_portfolio(updated, state.get_meta().get("portfolio_source", "manual entry"))
+                    st.success(f"Saved edits to {len(changed)} row(s).")
+                    st.rerun()
+            if r1.button("Remove selected", key="portfolio_remove"):
+                remove_mask = edited["Remove"].fillna(False).astype(bool).to_numpy()
+                if not remove_mask.any():
+                    st.info("Tick at least one row first.")
+                else:
+                    remaining = entries.drop(index=order[remove_mask]).reset_index(drop=True)
+                    save_portfolio(remaining if not remaining.empty else None, state.get_meta().get("portfolio_source", ""))
+                    st.rerun()
+            confirm = r2.checkbox("I want to delete every holding for this owner", key="portfolio_confirm")
+            if confirm and r2.button("Delete all holdings", key="portfolio_delete_all"):
+                save_portfolio(None, "")
                 st.rerun()
-        confirm = r2.checkbox("I want to delete every holding for this owner", key="portfolio_confirm")
-        if confirm and r2.button("Delete all holdings", key="portfolio_delete_all"):
-            save_portfolio(None, "")
-            st.rerun()
 else:
     st.info("No holdings yet for this owner. Upload a file or add entries with the form.")
 
