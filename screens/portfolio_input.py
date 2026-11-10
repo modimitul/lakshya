@@ -190,12 +190,20 @@ else:
                 st.success(f"Added {stock}: {qty} × {buy:,.2f} = {inr(qty * buy, prefix='₹')}")
 
 if entries is not None and not entries.empty:
+    n_sells = int((entries["side"] == "sell").sum()) if "side" in entries else 0
+    n_buys = len(entries) - n_sells
     total = float(entries.loc[entries["side"] != "sell", "cost"].sum()) if "side" in entries else float(entries["cost"].sum())
-    with st.expander(f"Entries saved for {owner} ({len(entries):,} rows, {inr(total, prefix='₹')} purchased)",
-                     expanded=(mode == "Add entries manually")):
+    with st.expander(f"Entries saved for {owner} ({n_buys:,} buys"
+                     + (f", {n_sells:,} sells" if n_sells else "") + f", {inr(total, prefix='₹')} purchased)",
+                     expanded=(mode in ("Add entries manually", "Record a sale"))):
+        if n_sells:
+            st.caption("A sale is kept as its own SELL row next to the original BUY rows — that is the audit trail, "
+                       "not a duplicate. The dashboard matches sells to buys FIFO and shows only what remains as holdings.")
         order = entries.sort_values("month", ascending=False, na_position="last").index
         view = entries.loc[order].copy()
         view["month"] = view["month"].dt.strftime("%b-%y")
+        if "side" in view:
+            view["side"] = view["side"].astype("string").str.upper()
         buys_only = view["side"] != "sell" if "side" in view else pd.Series(True, index=view.index)
         view["% Investment"] = (view["cost"] / total * 100).where(buys_only) if total else pd.NA
         view = view.rename(columns={"month": "Month", "sector": "Sector", "stock": "Stock", "qty": "Qty", "side": "Side",

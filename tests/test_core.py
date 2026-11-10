@@ -466,3 +466,25 @@ def test_liquid_fund_asset_class_and_fund_sectors():
     assert asset_class_summary(classified)["Asset class"].tolist() == ["ETF", "Equity MF", "Debt", "Liquid Fund"]
     for sector in ("MUTUAL FUND", "DEBT FUND", "LIQUID FUND", "ETF"):
         assert sector in COMMON_SECTORS
+
+
+def test_yearly_sales_summary_groups_by_sale_year():
+    from core.portfolio import clean_portfolio, match_sales, yearly_sales_summary
+    raw = pd.DataFrame({
+        "MONTH": ["Jan-22", "Jan-23", "Mar-25", "Jun-25", "Feb-26"],
+        "SECTORS": ["RETAIL", "RETAIL", "RETAIL", "RETAIL", "RETAIL"],
+        "STOCK": ["DMART", "DMART", "DMART", "DMART", "DMART"],
+        "QTY": [100, 50, 40, 30, 20], "BUY": [3000, 3500, 4000, 4200, 4500],
+        "SIDE": ["BUY", "BUY", "SELL", "SELL", "SELL"], "CHARGES": [None, None, 0, 0, 0],
+    })
+    _, sales = match_sales(clean_portfolio(raw).entries)
+    ysum = yearly_sales_summary(sales).set_index("Year")
+    assert list(ysum.index) == [2025, 2026]
+    assert ysum.loc[2025, "Sales"] == 2
+    # 2025: 70 shares sold FIFO from the 100 @3000 lot
+    assert ysum.loc[2025, "Cost"] == pytest.approx(70 * 3000)
+    assert ysum.loc[2025, "Profit"] == pytest.approx(40 * 4000 + 30 * 4200 - 70 * 3000)
+    assert ysum.loc[2025, "ROI %"] == pytest.approx(ysum.loc[2025, "Profit"] / ysum.loc[2025, "Cost"] * 100)
+    # 2026: 20 shares from the remaining 30 @3000
+    assert ysum.loc[2026, "Cost"] == pytest.approx(20 * 3000)
+    assert ysum.loc[2026, "CAGR %"] is not None

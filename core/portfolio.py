@@ -206,6 +206,24 @@ def sales_summary(sales: pd.DataFrame) -> dict:
     return {"profit": profit, "cost": cost, "roi": profit / cost * 100 if cost else None, "cagr": cagr, "count": int(len(sales))}
 
 
+def yearly_sales_summary(sales: pd.DataFrame) -> pd.DataFrame:
+    """Per calendar year of sale: count, sale value, FIFO cost, profit booked, ROI % and CAGR %.
+
+    ROI = profit ÷ cost of the lots sold that year; CAGR = (sale value ÷ cost)^(1 ÷ cost-weighted
+    years held) − 1, aggregated over that year's sales. Sales without a usable month are left out.
+    """
+    if sales is None or sales.empty:
+        return pd.DataFrame(columns=["Year", "Sales", "Sale value", "Cost", "Profit", "ROI %", "CAGR %"])
+    df = sales.copy()
+    df["_year"] = pd.to_datetime(df["month"]).dt.year
+    rows = []
+    for year, group in df.dropna(subset=["_year"]).groupby("_year"):
+        agg = sales_summary(group)
+        rows.append({"Year": int(year), "Sales": agg["count"], "Sale value": float(group["sale_value"].sum()),
+                     "Cost": agg["cost"], "Profit": agg["profit"], "ROI %": agg["roi"], "CAGR %": agg["cagr"]})
+    return pd.DataFrame(rows).sort_values("Year").reset_index(drop=True)
+
+
 # -------------------------------------------------------------- analysis --
 def filter_entries(entries: pd.DataFrame, years=None, sectors=None, months=None) -> pd.DataFrame:
     df = entries

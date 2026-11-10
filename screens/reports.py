@@ -10,7 +10,8 @@ from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, capital_table, kpis, monthly_summary, to_excel_bytes,
                           yearly_summary, yearly_with_total)
 from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, holdings, match_sales,
-                            sales_summary, sector_allocation, sector_class_map, with_asset_class)
+                            sales_summary, sector_allocation, sector_class_map, with_asset_class,
+                            yearly_sales_summary)
 
 owner = state.user_name()
 st.title("Dashboard Reports")
@@ -360,12 +361,19 @@ with invest_tab:
                 state.put_meta({"asset_class_overrides": new_overrides})
                 st.rerun()
 
+        st.subheader(f"{owner} · Investment Book" + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
+        inv_sheets = {}
+        summary = asset_class_summary(view)
         if view.empty:
-            st.warning("No holdings match these filters.")
+            if not sales_all.empty and remaining_all.empty:
+                st.info("Nothing is currently held: every purchase has been sold. The profit booked is below.")
+            elif not sales_all.empty:
+                st.info("No remaining holdings match these filters (sales may have consumed them). "
+                        "Profit booked is below; clear a filter to see other holdings.")
+            else:
+                st.warning("No holdings match these filters. Clear a filter above to see more.")
         else:
-            summary = asset_class_summary(view)
             total_all = float(view["cost"].sum())
-            st.subheader(f"{owner} · Investment Book" + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
             o2, o1 = st.columns([1, 1])
             with o1:
                 shown = summary.copy()
@@ -382,52 +390,95 @@ with invest_tab:
                                        hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
                 fig.update_layout(title="Allocation by asset class", margin=MARGIN, height=300, legend=dict(orientation="h", y=-0.1))
                 st.plotly_chart(fig, width="stretch", key="asset_class_pie")
+            inv_sheets["Asset classes"] = summary
 
-            inv_sheets = {"Asset classes": summary}
+        # ---- profit booked on sales (FIFO-matched); shown even when nothing is held any more
+        st.subheader("Profit booked on sales")
+        if sales_view is None or sales_view.empty:
+            st.caption("No sales recorded yet. Use Investment Book → Record a sale (or SIDE = SELL rows in an upload).")
+        else:
+            ss = sales_summary(sales_view)
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Profit booked", inr(ss["profit"], prefix="₹"))
+            k2.metric("Cost of lots sold", inr(ss["cost"], prefix="₹"))
+            k3.metric("ROI", f"{pct(ss['roi'], 1)}%" if ss["roi"] is not None else "—", help="Profit ÷ cost of the lots sold.")
+            k4.metric("CAGR", f"{pct(ss['cagr'], 1)}%" if ss["cagr"] is not None else "—",
+                      help="(Sale value ÷ cost)^(1 ÷ cost-weighted years held) − 1, across all sales shown.")
+            k5.metric("Sales", f"{ss['count']}")
 
-            # ---- profit booked on sales (FIFO-matched)
-            st.subheader("Profit booked on sales")
-            if sales_view is None or sales_view.empty:
-                st.caption("No sales recorded yet. Use Investment Book → Record a sale (or SIDE = SELL rows in an upload).")
-            else:
-                ss = sales_summary(sales_view)
-                k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric("Profit booked", inr(ss["profit"], prefix="₹"))
-                k2.metric("Cost of lots sold", inr(ss["cost"], prefix="₹"))
-                k3.metric("ROI", f"{pct(ss['roi'], 1)}%" if ss["roi"] is not None else "—", help="Profit ÷ cost of the lots sold.")
-                k4.metric("CAGR", f"{pct(ss['cagr'], 1)}%" if ss["cagr"] is not None else "—",
-                          help="(Sale value ÷ cost)^(1 ÷ cost-weighted years held) − 1, across all sales shown.")
-                k5.metric("Sales", f"{ss['count']}")
-                srt = sales_view.sort_values("month")
+            # -- by year: chart, then table
+            ysum = yearly_sales_summary(sales_view)
+            if not ysum.empty:
+                st.markdown("**By year**")
                 fig = go.Figure()
-                fig.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
-                            marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],
-                            text=srt["profit"].map(inr), textposition="outside", hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-                fig.add_scatter(name="CAGR (%)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["cagr"], yaxis="y2",
-                                mode="markers+text", text=srt["cagr"].map(lambda v: pct(v, 1) + "%" if pd.notna(v) else ""),
-                                textposition="top center", marker=dict(color=BLUE, size=10),
+                fig.add_bar(name="Profit booked (₹)", x=ysum["Year"].astype(str), y=ysum["Profit"],
+                            marker_color=[GREEN if v >= 0 else RED for v in ysum["Profit"]],
+                            text=ysum["Profit"].map(inr), textposition="outside",
+                            hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+                fig.add_scatter(name="ROI (%)", x=ysum["Year"].astype(str), y=ysum["ROI %"], yaxis="y2",
+                                mode="lines+markers+text", text=ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
+                                textposition="top center", line=dict(color=BLUE, width=2),
+                                hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
+                fig.add_scatter(name="CAGR (%)", x=ysum["Year"].astype(str), y=ysum["CAGR %"], yaxis="y2",
+                                mode="lines+markers+text", text=ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
+                                textposition="bottom center", line=dict(color="#C62828", width=2, dash="dot"),
                                 hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
-                fig.update_layout(title="Profit booked and CAGR per sale", margin=MARGIN, height=380, xaxis=dict(type="category"),
-                                  yaxis=dict(title="₹"), yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
-                                  legend=dict(orientation="h", y=-0.3))
-                st.plotly_chart(fig, width="stretch", key="sales_chart")
-                sale_table = pd.DataFrame({
-                    "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
-                    "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
-                    "Cost (FIFO)": srt["cost"].map(inr), "Profit": srt["profit"].map(inr), "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
-                    "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
-                    "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
+                fig.update_layout(title="Profit booked, ROI and CAGR by year", margin=MARGIN, height=400,
+                                  xaxis=dict(type="category"), yaxis=dict(title="₹"),
+                                  yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
+                                  legend=dict(orientation="h", y=-0.25))
+                st.plotly_chart(fig, width="stretch", key="sales_yearly_chart")
+                yshow = pd.DataFrame({
+                    "Year": ysum["Year"].astype(str), "Sales": ysum["Sales"],
+                    "Sale value": ysum["Sale value"].map(inr), "Cost (FIFO)": ysum["Cost"].map(inr),
+                    "Profit booked": ysum["Profit"].map(inr),
+                    "ROI %": ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
+                    "CAGR %": ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
                 })
-                total_row = pd.DataFrame([{"Sold": "Total", "Stock": "", "Qty": "", "Sell price": "", "Sale value": inr(srt["sale_value"].sum()),
-                                           "Cost (FIFO)": inr(ss["cost"]), "Profit": inr(ss["profit"]),
-                                           "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—", "First bought": "", "Years held": "",
-                                           "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
-                sale_table = pd.concat([sale_table, total_row], ignore_index=True)
-                st.dataframe(sale_table, hide_index=True, width="stretch", height=min(len(sale_table) + 1, 15) * 35 + 3)
-                if (srt["unmatched_qty"] > 0).any():
-                    st.warning("Some sales exceed the quantity bought before them; their unmatched part has no cost basis.")
-                inv_sheets["Sales"] = srt
+                ytotal = pd.DataFrame([{"Year": "Total", "Sales": int(ysum["Sales"].sum()),
+                                        "Sale value": inr(ysum["Sale value"].sum()), "Cost (FIFO)": inr(ss["cost"]),
+                                        "Profit booked": inr(ss["profit"]),
+                                        "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—",
+                                        "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
+                yshow = pd.concat([yshow, ytotal], ignore_index=True)
+                st.dataframe(yshow, hide_index=True, width="stretch", height=(len(yshow) + 1) * 35 + 3)
+                st.caption("ROI = profit ÷ cost of the lots sold that year. CAGR = (sale value ÷ cost)^(1 ÷ cost-weighted "
+                           "years held) − 1 over that year's sales; the Total row aggregates all sales shown.")
+                inv_sheets["Sales by year"] = ysum
 
+            # -- per sale: chart, then table
+            st.markdown("**Per sale**")
+            srt = sales_view.sort_values("month")
+            fig = go.Figure()
+            fig.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
+                        marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],
+                        text=srt["profit"].map(inr), textposition="outside", hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+            fig.add_scatter(name="CAGR (%)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["cagr"], yaxis="y2",
+                            mode="markers+text", text=srt["cagr"].map(lambda v: pct(v, 1) + "%" if pd.notna(v) else ""),
+                            textposition="top center", marker=dict(color=BLUE, size=10),
+                            hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
+            fig.update_layout(title="Profit booked and CAGR per sale", margin=MARGIN, height=380, xaxis=dict(type="category"),
+                              yaxis=dict(title="₹"), yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
+                              legend=dict(orientation="h", y=-0.3))
+            st.plotly_chart(fig, width="stretch", key="sales_chart")
+            sale_table = pd.DataFrame({
+                "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
+                "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
+                "Cost (FIFO)": srt["cost"].map(inr), "Profit": srt["profit"].map(inr), "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
+                "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
+                "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
+            })
+            total_row = pd.DataFrame([{"Sold": "Total", "Stock": "", "Qty": "", "Sell price": "", "Sale value": inr(srt["sale_value"].sum()),
+                                       "Cost (FIFO)": inr(ss["cost"]), "Profit": inr(ss["profit"]),
+                                       "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—", "First bought": "", "Years held": "",
+                                       "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
+            sale_table = pd.concat([sale_table, total_row], ignore_index=True)
+            st.dataframe(sale_table, hide_index=True, width="stretch", height=min(len(sale_table) + 1, 15) * 35 + 3)
+            if (srt["unmatched_qty"] > 0).any():
+                st.warning("Some sales exceed the quantity bought before them; their unmatched part has no cost basis.")
+            inv_sheets["Sales"] = srt
+
+        if not view.empty:
             class_tabs = st.tabs(ASSET_CLASSES)
             for tab, cls in zip(class_tabs, ASSET_CLASSES):
                 with tab:
@@ -437,9 +488,9 @@ with invest_tab:
                     else:
                         inv_sheets.update(render_holdings(slice_, f"{cls}", key=cls.replace(" ", "_").lower()))
             inv_sheets["Holdings (remaining)"] = view.assign(Month=view["month"].dt.strftime("%b-%y"))
-            inv_sheets["All entries"] = classified_all.assign(Month=classified_all["month"].dt.strftime("%b-%y"))
+        inv_sheets["All entries"] = classified_all.assign(Month=classified_all["month"].dt.strftime("%b-%y"))
 
-            st.subheader("Download")
-            st.download_button("Download investment report (Excel)", to_excel_bytes(inv_sheets),
-                               f"investment_report_{state.current_user()}.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.subheader("Download")
+        st.download_button("Download investment report (Excel)", to_excel_bytes(inv_sheets),
+                           f"investment_report_{state.current_user()}.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
