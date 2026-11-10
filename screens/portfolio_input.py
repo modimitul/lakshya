@@ -37,6 +37,19 @@ def show_messages(result: PortfolioResult) -> None:
         st.caption(msg)
 
 
+def import_quality_warning(frame: pd.DataFrame) -> None:
+    """Warn right after an import when purchase rows arrived without usable Qty or Cost."""
+    buys = frame[frame["side"] != "sell"] if "side" in frame else frame
+    if buys.empty:
+        return
+    qty_ok = (pd.to_numeric(buys["qty"], errors="coerce") > 0) if "qty" in buys.columns else pd.Series(False, index=buys.index)
+    cost_ok = (pd.to_numeric(buys["cost"], errors="coerce") > 0) if "cost" in buys.columns else pd.Series(False, index=buys.index)
+    no_qty, no_cost = int((~qty_ok).sum()), int((~cost_ok).sum())
+    if no_qty or no_cost:
+        st.warning(f"Heads up: {no_qty:,} imported purchase rows have no usable Qty and {no_cost:,} no usable Cost. "
+                   "Check the column mapping below and the sheet's Qty / Buy / Cost values, then re-import.")
+
+
 def save_portfolio(entries: pd.DataFrame | None, source: str) -> None:
     state.put_frame("portfolio", entries)
     state.put_meta({"portfolio_source": source})
@@ -97,6 +110,7 @@ if mode == "Upload a file":
                     save_portfolio(incoming, upload.name)
                     entries = incoming
                     st.success(f"Imported {len(entries):,} holdings worth {inr(entries['cost'].sum(), prefix='₹')} from {upload.name}.")
+                import_quality_warning(incoming)
                 with st.expander("Per-tab summary and column mapping"):
                     for note in result.notes:
                         st.write(note)

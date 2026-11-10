@@ -368,12 +368,16 @@ with invest_tab:
         st.caption(f"On file for {owner}: {n_buy_rows:,} purchase rows worth {inr(buy_cost_total, prefix='₹')}"
                    + (f" and {n_sell_rows:,} sale rows" if n_sell_rows else "")
                    + ". If an upload is missing from these numbers, it never imported — re-check Investment Book → Upload → Import.")
-        if "qty" in classified_all.columns:
-            buys_all = classified_all[classified_all["side"] != "sell"] if "side" in classified_all else classified_all
-            untracked = int((~(pd.to_numeric(buys_all["qty"], errors="coerce") > 0)).sum())
-            if untracked and n_sell_rows:
-                st.caption(f"{untracked:,} purchase rows have no usable quantity: they stay as holdings at full cost, "
-                           "but sales cannot be matched against them.")
+        buys_all = classified_all[classified_all["side"] != "sell"] if "side" in classified_all else classified_all
+        if not buys_all.empty:
+            qty_ok = (pd.to_numeric(buys_all["qty"], errors="coerce") > 0) if "qty" in buys_all.columns else pd.Series(False, index=buys_all.index)
+            cost_ok = (pd.to_numeric(buys_all["cost"], errors="coerce") > 0) if "cost" in buys_all.columns else pd.Series(False, index=buys_all.index)
+            no_qty, no_cost = int((~qty_ok).sum()), int((~cost_ok).sum())
+            if no_qty or no_cost:
+                st.warning(f"{no_qty:,} purchase rows have no usable Qty and {no_cost:,} no usable Cost — the import "
+                           "read those columns as blank. Such rows are kept as holdings but carry no value and cannot "
+                           "be matched to sales. Open Investment Book → Entries saved to inspect them, or re-import "
+                           "after checking the sheet's Qty/Buy/Cost headers.")
         inv_sheets = {}
         summary = asset_class_summary(view)
         if view.empty:

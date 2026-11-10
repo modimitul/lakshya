@@ -10,7 +10,7 @@ import os
 
 import streamlit as st
 
-from core import APP_NAME, APP_TAGLINE, state, store
+from core import APP_NAME, APP_TAGLINE, APP_VERSION, state, store
 
 st.set_page_config(page_title=APP_NAME, page_icon="🎯", layout="wide")
 
@@ -91,6 +91,7 @@ with st.sidebar:
         for key in ("authed", "signed_in_as"):
             st.session_state.pop(key, None)
         st.rerun()
+    st.caption(f"{APP_NAME} v{APP_VERSION}")
 
 home = st.Page("screens/home.py", title="Home", icon=":material/home:", default=True)
 trading = st.Page("screens/trading_input.py", title="Trading Book", icon=":material/upload_file:")
