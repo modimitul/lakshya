@@ -648,3 +648,28 @@ def test_open_positions_mask_and_settled_only():
     expected = round(175 * (58.88 - 52.13) - 48.5 + (100 * (0 - 10.0) - 5.0), 2)
     assert round(float(summary["Net Profit"].sum()), 2) == expected    # open NIFTY leg contributes nothing
     assert round(float(pd.to_numeric(summary["Brokerage"], errors="coerce").sum()), 2) == round(48.5 + 5.0 + 240.0, 2)
+
+
+def test_opening_side_catalogue():
+    from core.strategies import opening_side
+    assert opening_side("Naked Put Sell") == "sell"
+    assert opening_side("Short Strangle") == "sell"
+    assert opening_side("FUTURE Short") == "sell"
+    assert opening_side("Long Unwinding") == "sell"
+    assert opening_side("Naked Call Buy") == "buy"
+    assert opening_side("Equity") == "buy"
+    assert opening_side("Covered Call") == "buy"
+    assert opening_side("Short Covering") == "buy"
+    assert opening_side("some unknown thing") == "buy"
+
+
+def test_sell_first_entry_without_buy_date_groups_by_sale_month():
+    import pandas as pd
+    from core.parse import trade_from_form, open_positions_mask
+    r = trade_from_form(buy_date=None, stock="NIFTY", type="Naked Put Sell", strike=25000,
+                        qty=75, buy=0.0, sale_date=pd.Timestamp("2025-11-05").date(), sell=142.0,
+                        brokerage=0.0, margin=None, lot=None)
+    assert not r.errors, r.errors
+    t = r.trades
+    assert str(t["month"].iloc[0])[:7] == "2025-11"      # grouped by the sale month
+    assert bool(open_positions_mask(t).iloc[0])          # and it is an open position

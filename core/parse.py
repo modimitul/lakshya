@@ -409,8 +409,13 @@ def clean(raw: pd.DataFrame) -> ParseResult:
             n_filled = int((blank_month & month.notna()).sum())
             if n_filled:
                 result.notes.append(f"{n_filled} rows had no Month; their Buy Date month was used.")
+        if "sale_date" in df and month.isna().any():
+            month = month.fillna(_to_month_start(df["sale_date"]).where(month.isna()))
     elif "buy_date" in df:
         month = _to_month_start(df["buy_date"])
+        if "sale_date" in df and month.isna().any():
+            # Sell-first trades may carry only a sale date; group those by it.
+            month = month.fillna(_to_month_start(df["sale_date"]).where(month.isna()))
     elif "sale_date" in df:
         month = _to_month_start(df["sale_date"])
 

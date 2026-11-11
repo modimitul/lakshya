@@ -13,6 +13,7 @@ from core.strategies import (
     OTHER_TYPE,
     bias,
     definition,
+    opening_side,
     requires_strike,
     strategy_names,
 )
@@ -138,6 +139,7 @@ else:
         t2.markdown(f"**{trade_type}**  \n{desc}" + (f"  \nBias: {bias_txt}" if bias_txt else ""))
     is_charge = trade_type == CHARGE_TYPE
     needs_strike = requires_strike(trade_type) if trade_type != OTHER_TYPE else False
+    sells_first = (not is_charge) and trade_type != OTHER_TYPE and opening_side(trade_type) == "sell"
 
     with st.form("add_trade", clear_on_submit=True, border=True):
         if is_charge:
@@ -148,7 +150,12 @@ else:
             qty, buy, sell, sale_date, margin, lot, strike = 1, 0.0, 0.0, None, 0, 1, 0.0
         else:
             a, b, c = st.columns(3)
-            buy_date = a.date_input("Buy date", value=dt.date.today(), format="DD-MM-YYYY")
+            if sells_first:
+                sale_date = a.date_input("Sale date *", value=dt.date.today(), format="DD-MM-YYYY",
+                                         help=f"{trade_type} opens with a sale, so the sale date is required.")
+            else:
+                buy_date = a.date_input("Buy date *", value=dt.date.today(), format="DD-MM-YYYY",
+                                        help="This type opens with a buy, so the buy date is required.")
             stock = b.text_input("Stock", placeholder="e.g. TCS").strip().upper()
             strike = c.number_input("Strike price" + (" *" if needs_strike else " (optional)"), min_value=0.0, step=50.0, value=0.0,
                                     help="Required for option strategies." if needs_strike else "Not applicable to this type; leave 0.")
@@ -157,7 +164,12 @@ else:
             buy = b.number_input("Buy price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
             sell = c.number_input("Sell price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
             a, b, c, d = st.columns(4)
-            sale_date = a.date_input("Sale date (optional)", value=None, format="DD-MM-YYYY")
+            if sells_first:
+                buy_date = a.date_input("Buy date (optional)", value=None, format="DD-MM-YYYY",
+                                        help="Fill when the position is bought back / squared off — or later, from Open positions.")
+            else:
+                sale_date = a.date_input("Sale date (optional)", value=None, format="DD-MM-YYYY",
+                                         help="Fill when the position is sold / squared off — or later, from Open positions.")
             brokerage = b.number_input("Brokerage & charges", min_value=0.0, step=1.0, value=0.0, format="%.2f")
             margin = c.number_input("Margin per lot", min_value=0, step=1000, value=0)
             lot = d.number_input("Lots", min_value=0, step=1, value=1)
@@ -175,6 +187,14 @@ else:
                 problems.append("Qty must be greater than 0.")
             if buy <= 0 and sell <= 0:
                 problems.append("Enter a buy and a sell price.")
+            if sells_first and sale_date is None:
+                problems.append(f"Sale date is required: {trade_type} opens with a sale.")
+            if not sells_first and buy_date is None:
+                problems.append("Buy date is required for this type.")
+            if sells_first and sell <= 0 < buy:
+                problems.append(f"Enter the sell price: {trade_type} opens with a sale.")
+            if not sells_first and buy <= 0 < sell:
+                problems.append("Enter the buy price: this type opens with a buy.")
             if needs_strike and strike <= 0:
                 problems.append(f"Strike price is required for {trade_type}.")
             if trade_type == OTHER_TYPE and not other_type.strip():

@@ -82,5 +82,31 @@ def requires_strike(name: str) -> bool:
     return canonical(name) not in NON_OPTION_TYPES
 
 
+# Opening side of each type: what the FIRST leg does. A "sell"-opening trade
+# (short option, short future, fresh shorts) starts with a sale, so its Sale
+# date is the mandatory one and the Buy date arrives when it is squared off;
+# a "buy"-opening trade is the reverse.
+_SIDE_OVERRIDES = {
+    "Long Unwinding": "sell",    # holders selling out
+    "Short Build Up": "sell",    # fresh shorts
+    "Short Covering": "buy",     # buying back to close
+    "Long Build Up": "buy",      # fresh longs
+}
+
+
+def opening_side(name) -> str:
+    """'sell' when the strategy opens with a sale, else 'buy'."""
+    canon = canonical(name)
+    if canon in _SIDE_OVERRIDES:
+        return _SIDE_OVERRIDES[canon]
+    first_leg = _BY_NAME.get(canon, ("", ""))[0].strip().upper()
+    if first_leg.startswith("SELL"):
+        return "sell"
+    if first_leg.startswith("BUY"):
+        return "buy"
+    n = canon.upper()
+    return "sell" if ("SELL" in n or "SHORT" in n) else "buy"
+
+
 def strategies_frame() -> pd.DataFrame:
     return pd.DataFrame(STRATEGIES, columns=["Strategy", "Definition", "Bull / Bear / Neutral"])

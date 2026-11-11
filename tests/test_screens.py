@@ -174,6 +174,40 @@ def test_strategy_guide_page_renders():
     assert "Iron Condor" in set(table["Strategy"]) and len(table) >= 30
 
 
+def test_manual_form_dates_follow_opening_side():
+    at = app("screens/trading_input.py")
+    at.radio[0].set_value("Add trades manually").run()
+    # default type is Naked Call Sell -> sale date mandatory, buy date optional
+    labels = [w.label for w in at.date_input]
+    assert "Sale date *" in labels and "Buy date (optional)" in labels
+    # a buy-opening type flips the pair
+    by_label(at.selectbox, "Type").set_value("Naked Call Buy").run()
+    labels = [w.label for w in at.date_input]
+    assert "Buy date *" in labels and "Sale date (optional)" in labels
+    # sell-first: entering only the sell leg saves an OPEN trade under the sale month
+    by_label(at.selectbox, "Type").set_value("Naked Put Sell").run()
+    by_label(at.text_input, "Stock").set_value("NIFTY")
+    by_label(at.number_input, "Strike price *").set_value(25000)
+    by_label(at.number_input, "Qty").set_value(75)
+    by_label(at.number_input, "Sell price").set_value(142.0)
+    by_label(at.button, "Add trade").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Added NIFTY" in s_.value for s_ in at.success)
+    from core import store
+    from core.parse import open_positions_mask
+    saved = store.load_frame("owner", "trades")
+    assert bool(open_positions_mask(saved).iloc[0])
+    # buy-first: entering only the buy price must be refused without... actually buy-only is allowed (open long);
+    # but a buy-first type with ONLY a sell price is refused
+    by_label(at.selectbox, "Type").set_value("Naked Call Buy").run()
+    by_label(at.text_input, "Stock").set_value("TCS")
+    by_label(at.number_input, "Strike price *").set_value(3400)
+    by_label(at.number_input, "Qty").set_value(100)
+    by_label(at.number_input, "Sell price").set_value(58.88)
+    by_label(at.button, "Add trade").click().run()
+    assert any("opens with a buy" in e.value for e in at.error)
+
+
 def test_investment_open_positions_record_sale():
     import pandas as pd
     from core import store
