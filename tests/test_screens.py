@@ -163,6 +163,10 @@ def test_open_positions_flow_and_dashboard_exclusion():
     # only the TCS trade counts
     assert any(m.label == "Net profit" for m in at.metric)
     assert any(m.label == "Avg yearly ROI" for m in at.metric)
+    # the open NIFTY row is nowhere on the dashboard — not even in the trade log tables
+    for frame in at.get("dataframe"):
+        vals = frame.value.astype(str).to_numpy().ravel().tolist()
+        assert not any("NIFTY" in v for v in vals), "open position leaked into a dashboard table"
 
 
 def test_strategy_guide_page_renders():
@@ -184,6 +188,10 @@ def test_manual_form_dates_follow_opening_side():
     by_label(at.selectbox, "Type").set_value("Naked Call Buy").run()
     labels = [w.label for w in at.date_input]
     assert "Buy date *" in labels and "Sale date (optional)" in labels
+    # strike price is a whole-number field (no decimals)
+    strike_w = by_label(at.number_input, "Strike price *")
+    from streamlit.proto.NumberInput_pb2 import NumberInput as NumberInputProto
+    assert strike_w.proto.data_type == NumberInputProto.INT   # whole numbers only
     # sell-first: entering only the sell leg saves an OPEN trade under the sale month
     by_label(at.selectbox, "Type").set_value("Naked Put Sell").run()
     by_label(at.text_input, "Stock").set_value("NIFTY")

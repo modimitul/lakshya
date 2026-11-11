@@ -157,8 +157,9 @@ else:
                 buy_date = a.date_input("Buy date *", value=dt.date.today(), format="DD-MM-YYYY",
                                         help="This type opens with a buy, so the buy date is required.")
             stock = b.text_input("Stock", placeholder="e.g. TCS").strip().upper()
-            strike = c.number_input("Strike price" + (" *" if needs_strike else " (optional)"), min_value=0.0, step=50.0, value=0.0,
-                                    help="Required for option strategies." if needs_strike else "Not applicable to this type; leave 0.")
+            strike = c.number_input("Strike price" + (" *" if needs_strike else " (optional)"), min_value=0, step=50, value=0,
+                                    help=("Required for option strategies. Whole numbers only — strikes have no decimals."
+                                          if needs_strike else "Not applicable to this type; leave 0."))
             a, b, c = st.columns(3)
             qty = a.number_input("Qty", min_value=0, step=1, value=0)
             buy = b.number_input("Buy price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
@@ -239,7 +240,7 @@ if trades is not None and not trades.empty:
             "month": st.column_config.DateColumn("Month", format="MMM YY", disabled=True),
             "stock": st.column_config.TextColumn("Stock"),
             "type": st.column_config.SelectboxColumn("Type", options=type_options),
-            "strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+            "strike": st.column_config.NumberColumn("Strike", format="%.0f", step=1),
             "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
             "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
             "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
