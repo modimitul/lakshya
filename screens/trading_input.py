@@ -286,16 +286,38 @@ if trades is not None and not trades.empty:
                     st.rerun()
 
     settled = trades[~open_mask]
-    with st.expander(f"Trades saved for {owner} ({len(settled):,})", expanded=(mode == "Add trades manually")):
+    focus = st.session_state.get("tradebook_focus")
+    focus_label, focus_mask = None, None
+    if focus and not settled.empty:
+        from core.benchmarks import period_label
+        focus_mask = period_label(settled["month"], focus.get("basis", "calendar")) == focus.get("label")
+        if focus_mask.any():
+            focus_label = focus.get("label")
+        else:
+            st.session_state.pop("tradebook_focus", None)
+    elif focus:
+        st.session_state.pop("tradebook_focus", None)
+
+    shown = settled[focus_mask] if focus_label else settled
+    title = (f"Trades saved for {owner} — {focus_label} only ({len(shown):,})" if focus_label
+             else f"Trades saved for {owner} ({len(settled):,})")
+    with st.expander(title, expanded=bool(focus_label) or (mode == "Add trades manually")):
+        if focus_label:
+            fi, fb = st.columns([3, 1])
+            fi.info(f"Showing the {len(shown):,} trade(s) behind the Dashboard's **{focus_label}** figure. "
+                    "Fix any cell and press **Save changes**; the Dashboard recalculates.")
+            if fb.button("Show all trades", width="stretch"):
+                st.session_state.pop("tradebook_focus", None)
+                st.rerun()
         st.caption("Closed trades and charges, most recent month first. Cells are editable: change a cell and "
                    "press **Save changes** — P&L, gross profit and ROI are recalculated for the rows you touched. "
                    "Tick **Remove** to delete rows. Month and the computed columns are read-only.")
-        order = settled.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
+        order = shown.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
         grid = trades.loc[order, editable_cols + computed_cols].copy()
         grid.insert(0, "Remove", False)
         edited = st.data_editor(
             grid, hide_index=True, width="stretch", height=min(len(grid) + 1, 14) * 35 + 3,
-            disabled=["month", "gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}",
+            disabled=["month", "gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}_{focus_label or 'all'}",
             column_config=trade_column_config(),
         )
         r0, r1, r2 = st.columns([1, 1, 2])

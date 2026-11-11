@@ -208,6 +208,53 @@ def test_manual_form_dates_follow_opening_side():
     assert any("opens with a buy" in e.value for e in at.error)
 
 
+def test_tradebook_focus_filters_trades_saved():
+    import pandas as pd
+    from core import store
+    from core.parse import clean
+
+    raw = pd.DataFrame({
+        "Month": ["Mar-25", "Apr-25", "May-24"],
+        "Buy Date": [pd.Timestamp("2025-03-05"), pd.Timestamp("2025-04-07"), pd.Timestamp("2024-05-06")],
+        "Stock": ["TCS", "NIFTY", "INFY"],
+        "Type": ["Naked Call Sell", "Naked Put Sell", "Naked Call Buy"],
+        "Strike Price": [3400, 25000, 1500],
+        "QTY": [175, 75, 100],
+        "Buy": [52.13, 90.0, 10.0],
+        "Sale Date": [pd.Timestamp("2025-03-16"), pd.Timestamp("2025-04-17"), pd.Timestamp("2024-05-20")],
+        "Sell": [58.88, 120.0, 14.0],
+        "Brokerage": [48.5, 30.0, 5.0],
+    })
+    store.save_frame("owner", "trades", clean(raw).trades)
+
+    # calendar-year focus from the Dashboard: only 2025 trades are shown
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.session_state["tradebook_focus"] = {"label": "2025", "basis": "calendar"}
+    at.run()
+    at.switch_page("screens/trading_input.py").run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("2025 only (2)" in ex.label for ex in at.expander)
+    assert any("behind the Dashboard" in i.value for i in at.info)
+    # clearing the filter brings back all three
+    by_label(at.button, "Show all trades").click().run()
+    assert any("Trades saved for Owner (3)" in ex.label.replace(",", "") for ex in at.expander)
+
+    # a financial-year focus label groups Mar-25 under FY 2024-25
+    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at2.session_state["tradebook_focus"] = {"label": "FY 2024-25", "basis": "financial"}
+    at2.run()
+    at2.switch_page("screens/trading_input.py").run()
+    assert any("FY 2024-25 only (2)" in ex.label for ex in at2.expander)   # May-24 + Mar-25
+
+    # a label with no matching trades is dropped silently
+    at3 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at3.session_state["tradebook_focus"] = {"label": "2019", "basis": "calendar"}
+    at3.run()
+    at3.switch_page("screens/trading_input.py").run()
+    assert "tradebook_focus" not in at3.session_state
+    assert any("Trades saved for Owner (3)" in ex.label.replace(",", "") for ex in at3.expander)
+
+
 def test_investment_open_positions_record_sale():
     import pandas as pd
     from core import store

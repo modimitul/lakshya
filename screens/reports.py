@@ -144,7 +144,19 @@ with trading_tab:
                           xaxis=dict(type="category"), yaxis=dict(title="₹"),
                           yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False, rangemode="tozero"),
                           legend=dict(orientation="h", y=-0.2))
-        st.plotly_chart(fig, width="stretch", key="yearly_chart")
+        st.caption("**Click a year's bar** to open that year's trades in the Trading Book and check or fix the rows behind the figure.")
+        yearly_event = st.plotly_chart(fig, width="stretch", key="yearly_chart",
+                                       on_select="rerun", selection_mode="points")
+        try:
+            _pts = list(yearly_event.selection.points)
+        except Exception:
+            _pts = []
+        if _pts:
+            _label = str(_pts[0].get("x"))
+            if "yearly_chart" in st.session_state:
+                del st.session_state["yearly_chart"]      # forget the click so the dashboard doesn't bounce back
+            st.session_state["tradebook_focus"] = {"label": _label, "basis": basis}
+            st.switch_page("screens/trading_input.py")
         yt = yearly_with_total(yearly)
         shown_y = pd.DataFrame({
             "Year": yt["Year"], "Investments": yt["Investments"].map(inr), "Net Profit": yt["Net Profit"].map(inr),
