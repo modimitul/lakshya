@@ -613,3 +613,38 @@ def test_remaining_correction_write_back_preserves_sold_portion():
     rem2, sales2 = match_sales(entries, with_lineage=True)
     assert rem2.iloc[0]["qty"] == 50 and rem2.iloc[0]["cost"] == 150000
     assert sales2.iloc[0]["profit"] == pytest.approx(20 * (4000 - 3000))   # past sale unchanged
+
+
+def test_open_positions_mask_and_settled_only():
+    import pandas as pd
+    from core.parse import clean, open_positions_mask
+    from core.metrics import monthly_summary, kpis, settled_only
+
+    raw = pd.DataFrame({
+        "Month": ["Oct-25", "Oct-25", "Oct-25", "Oct-25"],
+        "Buy Date": [pd.Timestamp("2025-10-07"), pd.NaT, pd.Timestamp("2025-10-01"), pd.NaT],
+        "Stock": ["TCS", "NIFTY", "INFY", "CHARGES"],
+        "Type": ["Naked Call Sell", "Naked Put Sell", "Naked Call Buy", "Brokerages"],
+        "Strike Price": [3400, 25000, 1500, None],
+        "QTY": [175, 75, 100, None],
+        "Buy": [52.13, None, 10.0, None],
+        "Sale Date": [pd.Timestamp("2025-10-16"), pd.Timestamp("2025-10-10"), pd.Timestamp("2025-10-28"), pd.NaT],
+        "Sell": [58.88, 120.0, 0.0, None],          # INFY expired worthless at 0 WITH a date -> closed
+        "Brokerage": [48.5, 0.0, 5.0, 240.0],
+    })
+    trades = clean(raw).trades
+    mask = open_positions_mask(trades)
+    by_stock = dict(zip(trades["stock"], mask))
+    assert by_stock["NIFTY"] is True or bool(by_stock["NIFTY"])      # buy leg missing -> open
+    assert not by_stock["TCS"]                                        # both legs -> settled
+    assert not by_stock["INFY"]                                       # zero-price close with date -> settled
+    assert not by_stock["CHARGES"]                                    # charges never open
+
+    settled = settled_only(trades)
+    assert set(settled["stock"]) == {"TCS", "INFY", "CHARGES"}
+    summary = monthly_summary(trades, None)
+    k = kpis(summary, trades)
+    assert k["trades"] == 2 and k["charges"] == 1                     # NIFTY not counted anywhere
+    expected = round(175 * (58.88 - 52.13) - 48.5 + (100 * (0 - 10.0) - 5.0), 2)
+    assert round(float(summary["Net Profit"].sum()), 2) == expected    # open NIFTY leg contributes nothing
+    assert round(float(pd.to_numeric(summary["Brokerage"], errors="coerce").sum()), 2) == round(48.5 + 5.0 + 240.0, 2)

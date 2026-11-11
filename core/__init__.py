@@ -4,5 +4,5 @@ Rename the product here; every page reads APP_NAME from this module.
 """
 
 APP_NAME = "Lakshya"
-APP_VERSION = "1.9"  # shown in the sidebar so a stale deployment is obvious
-APP_TAGLINE = "Trading and long-term investment dashboards, per portfolio owner"
+APP_VERSION = "2.0"  # shown in the sidebar so a stale deployment is obvious
+APP_TAGLINE = "Track every trade, SIP and investment — profits, ROI, CAGR and how you fare against the market"

@@ -245,6 +245,86 @@ with st.expander(f"SIP plans — auto-post monthly instalments ({n_active} activ
             st.rerun()
 
 if entries is not None and not entries.empty:
+    # ------------------------------------------------------ open positions ----
+    open_remaining, _ = match_sales(entries)
+    open_held = (open_remaining.groupby("stock")
+                 .agg(sector=("sector", "first"), qty=("qty", "sum"), cost=("cost", "sum"))
+                 .reset_index()) if not open_remaining.empty else pd.DataFrame()
+    if not open_held.empty:
+        open_held = open_held[pd.to_numeric(open_held["qty"], errors="coerce").fillna(0) > 0]
+    if not open_held.empty:
+        with st.expander(f"Open positions for {owner} ({len(open_held):,} holdings)", expanded=False):
+            st.caption("Everything still held (purchases minus FIFO-matched sales), one row per stock. "
+                       "To close or trim a position, fill **Sell qty** and **Sell price** (and charges if any) on its row and press "
+                       "**Record sales** — a SELL row is added to Entries saved below and the profit booked flows into "
+                       "Dashboard Reports → Investments.")
+            today = dt.date.today()
+            ogrid = pd.DataFrame({
+                "stock": open_held["stock"].astype(str),
+                "sector": open_held["sector"].astype(str),
+                "qty": pd.to_numeric(open_held["qty"], errors="coerce"),
+                "cost": pd.to_numeric(open_held["cost"], errors="coerce"),
+                "sell_qty": pd.Series([float("nan")] * len(open_held)),
+                "sell_price": pd.Series([float("nan")] * len(open_held)),
+                "sell_charges": pd.Series([float("nan")] * len(open_held)),
+                "sale_month": pd.Series([pd.Timestamp(today.year, today.month, 1)] * len(open_held)),
+            })
+            ogrid["avg"] = ogrid["cost"] / ogrid["qty"].where(ogrid["qty"] > 0)
+            ogrid = ogrid[["stock", "sector", "qty", "cost", "avg", "sell_qty", "sell_price", "sell_charges", "sale_month"]]
+            oedited = st.data_editor(
+                ogrid, hide_index=True, width="stretch", height=min(len(ogrid) + 1, 14) * 35 + 3,
+                disabled=["stock", "sector", "qty", "cost", "avg"],
+                key=f"open_holdings_{state.version('portfolio_version')}",
+                column_config={
+                    "stock": st.column_config.TextColumn("Stock"),
+                    "sector": st.column_config.TextColumn("Sector"),
+                    "qty": st.column_config.NumberColumn("Qty held", format="%.0f"),
+                    "cost": st.column_config.NumberColumn("Cost held (₹)", format="%.0f"),
+                    "avg": st.column_config.NumberColumn("Avg cost", format="%.2f"),
+                    "sell_qty": st.column_config.NumberColumn("Sell qty", min_value=0, format="%.0f"),
+                    "sell_price": st.column_config.NumberColumn("Sell price", min_value=0.0, format="%.2f"),
+                    "sell_charges": st.column_config.NumberColumn("Charges (₹)", min_value=0.0, format="%.2f"),
+                    "sale_month": st.column_config.DateColumn("Sale month", format="MMM YY"),
+                },
+            )
+            if st.button("Record sales", type="primary", key="open_holdings_sell"):
+                picked = oedited[(pd.to_numeric(oedited["sell_qty"], errors="coerce").fillna(0) > 0)
+                                 | (pd.to_numeric(oedited["sell_price"], errors="coerce").fillna(0) > 0)]
+                if picked.empty:
+                    st.info("Fill Sell qty and Sell price on at least one row first.")
+                else:
+                    problems, pending = [], []
+                    for _, prow in picked.iterrows():
+                        s_qty = pd.to_numeric(pd.Series([prow["sell_qty"]]), errors="coerce").iloc[0]
+                        s_price = pd.to_numeric(pd.Series([prow["sell_price"]]), errors="coerce").iloc[0]
+                        s_charges = pd.to_numeric(pd.Series([prow["sell_charges"]]), errors="coerce").iloc[0]
+                        s_charges = 0.0 if pd.isna(s_charges) else float(s_charges)
+                        held_q = float(prow["qty"])
+                        if pd.isna(s_qty) or s_qty <= 0 or pd.isna(s_price) or s_price <= 0:
+                            problems.append(f"{prow['stock']}: both Sell qty and Sell price must be greater than 0.")
+                        elif float(s_qty) > held_q + 1e-9:
+                            problems.append(f"{prow['stock']}: you hold {held_q:g}; cannot sell {float(s_qty):g}.")
+                        else:
+                            s_month = pd.Timestamp(prow["sale_month"]).date() if pd.notna(prow["sale_month"]) else today
+                            s_month = dt.date(s_month.year, s_month.month, 1)
+                            pending.append((s_month, str(prow["sector"]), str(prow["stock"]), float(s_qty), float(s_price), s_charges))
+                    if problems:
+                        for p_ in problems:
+                            st.error(p_)
+                    else:
+                        combined, booked = entries, []
+                        for s_month, s_sector, s_stock, s_qty, s_price, s_charges in pending:
+                            result = sale_from_form(s_month, s_sector, s_stock, s_qty, s_price, s_charges)
+                            show_messages(result)
+                            if result.ok:
+                                combined = pd.concat([combined, result.entries], ignore_index=True)
+                                booked.append(s_stock)
+                        if booked:
+                            save_portfolio(combined, state.get_meta().get("portfolio_source", "manual entry"))
+                            st.success(f"Recorded {len(booked)} sale(s): {', '.join(booked)}. "
+                                       "The SELL rows are in Entries saved below and profit booked is on the Dashboard.")
+                            st.rerun()
+
     n_sells = int((entries["side"] == "sell").sum()) if "side" in entries else 0
     n_buys = len(entries) - n_sells
     total = float(entries.loc[entries["side"] != "sell", "cost"].sum()) if "side" in entries else float(entries["cost"].sum())

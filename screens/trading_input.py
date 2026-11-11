@@ -11,16 +11,15 @@ from core.metrics import capital_frame, monthly_summary, months_in
 from core.strategies import (
     CHARGE_TYPE,
     OTHER_TYPE,
-    STRATEGIES,
     bias,
     definition,
     requires_strike,
-    strategies_frame,
     strategy_names,
 )
 from core.parse import (
     ParseResult,
     apply_grid_edits,
+    open_positions_mask,
     recompute_trades,
     dedupe_trades,
     load_capital_frame,
@@ -202,42 +201,82 @@ else:
                     st.success(f"Added {stock}: gross profit {inr(row['gross_profit'], prefix='₹')}"
                                + (f", ROI {row['roi']:.2f}%" if pd.notna(row.get("roi")) else ""))
 
-    with st.expander("Strategy guide"):
-        st.dataframe(strategies_frame(), hide_index=True, width="stretch", height=min(len(STRATEGIES) + 1, 20) * 35 + 3)
+    st.page_link("screens/strategy_guide.py", label="Open the Strategy Guide (definitions and bias)", icon="📖")
 
-# Review / delete list
+# Open positions / review / delete lists
 if trades is not None and not trades.empty:
-    with st.expander(f"Trades saved for {owner} ({len(trades):,})", expanded=(mode == "Add trades manually")):
-        st.caption("Cells are editable: when a trade is squared off, fill **Sell**, **Sale date** and **Brokerage** on its row and "
+    open_mask = open_positions_mask(trades)
+    editable_cols = [c for c in ("buy_date", "stock", "type", "strike", "qty", "buy", "sale_date", "sell",
+                                 "brokerage", "margin", "lot") if c in trades.columns]
+    computed_cols = [c for c in ("month", "gross_profit", "roi") if c in trades.columns]
+    type_options = sorted(set(strategy_names()) | set(trades["type"].dropna().astype(str))) if "type" in trades.columns else strategy_names()
+
+    def trade_column_config() -> dict:
+        return {
+            "Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
+            "buy_date": st.column_config.DateColumn("Buy date", format="DD-MMM-YY"),
+            "sale_date": st.column_config.DateColumn("Sale date", format="DD-MMM-YY"),
+            "month": st.column_config.DateColumn("Month", format="MMM YY", disabled=True),
+            "stock": st.column_config.TextColumn("Stock"),
+            "type": st.column_config.SelectboxColumn("Type", options=type_options),
+            "strike": st.column_config.NumberColumn("Strike", format="%.0f"),
+            "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
+            "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
+            "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
+            "brokerage": st.column_config.NumberColumn("Brokerage", format="%.2f"),
+            "margin": st.column_config.NumberColumn("Margin/lot", format="%.0f"),
+            "lot": st.column_config.NumberColumn("Lots", format="%.0f"),
+            "gross_profit": st.column_config.NumberColumn("Gross profit", format="%.0f"),
+            "roi": st.column_config.NumberColumn("ROI %", format="%.2f"),
+        }
+
+    if open_mask.any():
+        n_open = int(open_mask.sum())
+        with st.expander(f"Open positions for {owner} ({n_open})", expanded=True):
+            st.caption("Trades with one leg still missing — they stay out of the dashboards until closed. "
+                       "To close a position, fill the missing **Sell** (or **Buy**) price, its **date** and any **Brokerage**, "
+                       "then press **Close / save** — the row moves to Trades saved below and starts counting in the Dashboard. "
+                       "For an option that expired worthless, enter price **0** with the expiry date.")
+            open_order = trades[open_mask].sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
+            open_grid = trades.loc[open_order, editable_cols + computed_cols].copy()
+            open_grid.insert(0, "Remove", False)
+            open_edited = st.data_editor(
+                open_grid, hide_index=True, width="stretch", height=min(len(open_grid) + 1, 10) * 35 + 3,
+                disabled=["month", "gross_profit", "roi"], key=f"open_positions_{state.version('capital_version')}",
+                column_config=trade_column_config(),
+            )
+            o0, o1, _ = st.columns([1, 1, 2])
+            if o0.button("Close / save", type="primary", key="open_positions_save"):
+                updated, changed = apply_grid_edits(trades, open_order, open_edited, editable_cols)
+                if not changed:
+                    st.info("No cells were changed.")
+                else:
+                    updated = recompute_trades(updated, changed)
+                    save_trades(updated, state.get_frame("excluded"), state.get_meta().get("trades_source", "manual entry"))
+                    closed = int((~open_positions_mask(updated).reindex(changed).fillna(False)).sum())
+                    st.success(f"Saved {len(changed)} row(s); {closed} position(s) are now closed and moved to Trades saved.")
+                    st.rerun()
+            if o1.button("Remove selected", key="open_positions_remove"):
+                remove_mask = open_edited["Remove"].fillna(False).astype(bool).to_numpy()
+                if not remove_mask.any():
+                    st.info("Tick at least one row first.")
+                else:
+                    remaining = trades.drop(index=open_order[remove_mask]).reset_index(drop=True)
+                    save_trades(remaining if not remaining.empty else None, state.get_frame("excluded"), state.get_meta().get("trades_source", ""))
+                    st.rerun()
+
+    settled = trades[~open_mask]
+    with st.expander(f"Trades saved for {owner} ({len(settled):,})", expanded=(mode == "Add trades manually")):
+        st.caption("Closed trades and charges, most recent month first. Cells are editable: change a cell and "
                    "press **Save changes** — P&L, gross profit and ROI are recalculated for the rows you touched. "
                    "Tick **Remove** to delete rows. Month and the computed columns are read-only.")
-        order = trades.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
-        editable_cols = [c for c in ("buy_date", "stock", "type", "strike", "qty", "buy", "sale_date", "sell",
-                                     "brokerage", "margin", "lot") if c in trades.columns]
-        computed_cols = [c for c in ("month", "gross_profit", "roi") if c in trades.columns]
+        order = settled.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
         grid = trades.loc[order, editable_cols + computed_cols].copy()
         grid.insert(0, "Remove", False)
-        type_options = sorted(set(strategy_names()) | set(trades["type"].dropna().astype(str))) if "type" in trades.columns else strategy_names()
         edited = st.data_editor(
             grid, hide_index=True, width="stretch", height=min(len(grid) + 1, 14) * 35 + 3,
             disabled=["month", "gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}",
-            column_config={
-                "Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
-                "buy_date": st.column_config.DateColumn("Buy date", format="DD-MMM-YY"),
-                "sale_date": st.column_config.DateColumn("Sale date", format="DD-MMM-YY"),
-                "month": st.column_config.DateColumn("Month", format="MMM YY", disabled=True),
-                "stock": st.column_config.TextColumn("Stock"),
-                "type": st.column_config.SelectboxColumn("Type", options=type_options),
-                "strike": st.column_config.NumberColumn("Strike", format="%.0f"),
-                "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
-                "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
-                "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
-                "brokerage": st.column_config.NumberColumn("Brokerage", format="%.2f"),
-                "margin": st.column_config.NumberColumn("Margin/lot", format="%.0f"),
-                "lot": st.column_config.NumberColumn("Lots", format="%.0f"),
-                "gross_profit": st.column_config.NumberColumn("Gross profit", format="%.0f"),
-                "roi": st.column_config.NumberColumn("ROI %", format="%.2f"),
-            },
+            column_config=trade_column_config(),
         )
         r0, r1, r2 = st.columns([1, 1, 2])
         if r0.button("Save changes", type="primary", key="trades_save_edits"):

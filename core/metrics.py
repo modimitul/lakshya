@@ -15,6 +15,15 @@ from .formatting import EXCEL_INR_FORMAT
 SUMMARY_COLUMNS = ["month", "Month", "Trades", "Charges", "Average of Capital", "Net Profit", "Brokerage", "Monthly ROI", "Win rate"]
 
 
+def settled_only(trades: pd.DataFrame) -> pd.DataFrame:
+    """Trades without open positions: dashboards count closed trades and charges only."""
+    from .parse import open_positions_mask
+
+    if trades is None or trades.empty:
+        return trades
+    return trades[~open_positions_mask(trades)]
+
+
 def charge_mask(trades: pd.DataFrame) -> pd.Series:
     """True for charge entries. Works for data stored before entry_kind existed."""
     if "entry_kind" in trades:
@@ -63,6 +72,9 @@ def monthly_summary(trades: pd.DataFrame, capital: pd.DataFrame | None = None) -
     if trades.empty or "month" not in trades:
         return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
+    trades = settled_only(trades)
+    if trades.empty:
+        return pd.DataFrame(columns=SUMMARY_COLUMNS)
     is_charge = charge_mask(trades)
     grouped = trades.groupby("month", sort=True)
     real = trades[~is_charge].groupby("month", sort=True)
@@ -94,6 +106,7 @@ def kpis(summary: pd.DataFrame, trades: pd.DataFrame) -> dict:
     roi = summary["Monthly ROI"].dropna()
     best = summary.loc[summary["Net Profit"].idxmax()]
     worst = summary.loc[summary["Net Profit"].idxmin()]
+    trades = settled_only(trades)
     real = trades[~charge_mask(trades)]
     gp = real["gross_profit"] if "gross_profit" in real else pd.Series(dtype=float)
     return {
@@ -113,6 +126,9 @@ def kpis(summary: pd.DataFrame, trades: pd.DataFrame) -> dict:
 def breakdown(trades: pd.DataFrame, by: str) -> pd.DataFrame:
     """Trades, net profit, win rate and mean ROI grouped by `by` (e.g. stock, type)."""
     if by not in trades or trades.empty:
+        return pd.DataFrame()
+    trades = settled_only(trades)
+    if trades.empty:
         return pd.DataFrame()
     is_charge = charge_mask(trades)
     grouped = trades.groupby(by, dropna=True)

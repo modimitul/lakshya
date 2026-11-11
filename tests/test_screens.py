@@ -86,30 +86,109 @@ def test_portfolio_manual_form_adds_an_entry():
     assert any(m.label == "Total invested" for m in at.metric)
 
 
-def test_sign_in_with_new_username_creates_owner(monkeypatch):
+def test_login_and_new_user_tabs(monkeypatch):
     monkeypatch.setenv("APP_PASSWORD", "secret")
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
     at.run()
     assert not at.exception
     assert not at.sidebar.selectbox, "gate should hide the app"
-    by_label(at.text_input, "Username").set_value("Priya")
-    by_label(at.text_input, "Password").set_value("wrong")
-    by_label(at.button, "Sign in").click().run()
-    assert any("not correct" in e.value for e in at.error)
+    # Login tab: unknown username is rejected, it does not silently create an owner
     by_label(at.text_input, "Username").set_value("Priya")
     by_label(at.text_input, "Password").set_value("secret")
-    by_label(at.button, "Sign in").click().run()
+    by_label(at.button, "Login").click().run()
+    assert any("No login named" in e.value for e in at.error)
+    # New user tab: wrong password rejected, correct password creates the owner and signs in
+    by_label(at.text_input, "Choose a username").set_value("Priya")
+    at.text_input(key="new_user_pw").set_value("wrong")
+    by_label(at.button, "Create login").click().run()
+    assert any("not correct" in e.value for e in at.error)
+    by_label(at.text_input, "Choose a username").set_value("Priya")
+    at.text_input(key="new_user_pw").set_value("secret")
+    by_label(at.button, "Create login").click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["signed_in_as"] == "priya"
     assert at.session_state["user"] == "priya"
-    # second person signs in in a fresh session: both owners exist, no placeholders
+    # fresh session: a second owner via New user, then an existing-name login works
     at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
     at2.run()
-    by_label(at2.text_input, "Username").set_value("Rahul")
-    by_label(at2.text_input, "Password").set_value("secret")
-    by_label(at2.button, "Sign in").click().run()
+    by_label(at2.text_input, "Choose a username").set_value("Rahul")
+    at2.text_input(key="new_user_pw").set_value("secret")
+    by_label(at2.button, "Create login").click().run()
     names = sorted(u["name"] for u in at2.session_state["users"])
     assert names == ["Priya", "Rahul"]
+    at3 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at3.run()
+    by_label(at3.text_input, "Username").set_value("Priya")
+    by_label(at3.text_input, "Password").set_value("secret")
+    by_label(at3.button, "Login").click().run()
+    assert not at3.exception and at3.session_state["signed_in_as"] == "priya"
+    # duplicate username on New user is refused
+    at4 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at4.run()
+    by_label(at4.text_input, "Choose a username").set_value("priya")
+    at4.text_input(key="new_user_pw").set_value("secret")
+    by_label(at4.button, "Create login").click().run()
+    assert any("already exists" in e.value for e in at4.error)
+
+
+def test_open_positions_flow_and_dashboard_exclusion():
+    import pandas as pd
+    from core import store
+    from core.parse import clean
+
+    raw = pd.DataFrame({
+        "Month": ["Oct-25", "Oct-25"],
+        "Buy Date": [pd.Timestamp("2025-10-07"), pd.NaT],
+        "Stock": ["TCS", "NIFTY"],
+        "Type": ["Naked Call Sell", "Naked Put Sell"],
+        "Strike Price": [3400, 25000],
+        "QTY": [175, 75],
+        "Buy": [52.13, None],          # NIFTY: sold, buy leg still open
+        "Sale Date": [pd.Timestamp("2025-10-16"), pd.Timestamp("2025-10-10")],
+        "Sell": [58.88, 120.0],
+        "Brokerage": [48.5, 0.0],
+    })
+    trades = clean(raw).trades
+    store.save_frame("owner", "trades", trades)
+
+    at = app("screens/trading_input.py")
+    body = str(at)
+    assert "Open positions for" in body and "Trades saved for" in body
+    # the open NIFTY row sits in the open grid, not in Trades saved (1 settled row)
+    assert "Trades saved for Owner (1)" in body.replace(",", "")
+
+    at.switch_page("screens/reports.py").run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("open position(s) are excluded" in c.value for c in at.caption)
+    # only the TCS trade counts
+    assert any(m.label == "Net profit" for m in at.metric)
+    assert any(m.label == "Avg yearly ROI" for m in at.metric)
+
+
+def test_strategy_guide_page_renders():
+    at = app("screens/strategy_guide.py")
+    assert any(t.value == "Strategy Guide" for t in at.title)
+    frames = at.get("dataframe")
+    assert frames, "the strategies table should render"
+    table = frames[0].value
+    assert "Iron Condor" in set(table["Strategy"]) and len(table) >= 30
+
+
+def test_investment_open_positions_record_sale():
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "Month": ["Jul-23"], "Sector": ["CHEMICALS"], "Stock": ["SRF"],
+        "QTY": [50], "Buy": [2179.17], "Cost": [50 * 2179.17],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app("screens/portfolio_input.py")
+    assert "Open positions for" in str(at)
+    grid = at.get("data_editor")
+    assert grid, "open-positions editor should render"
 
 
 def test_asset_class_rules_can_be_saved_from_the_dashboard(tmp_path, monkeypatch):

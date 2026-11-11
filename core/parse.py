@@ -813,3 +813,29 @@ def recompute_trades(df: pd.DataFrame, rows: list) -> pd.DataFrame:
             zero_trade = (math.isnan(pl) or pl == 0) and (math.isnan(buy) or buy == 0) and (math.isnan(sell) or sell == 0)
             out.at[idx, "entry_kind"] = "charge" if (typ == CHARGE_TYPE or (zero_trade and brokerage > 0)) else "trade"
     return out
+
+
+def open_positions_mask(trades: pd.DataFrame) -> pd.Series:
+    """True for trades still open: one leg has neither a price nor a date.
+
+    Works for both directions — a long bought and not yet sold (Sell and Sale date
+    blank) and a sold option not yet bought back (Buy and Buy date blank). A leg
+    closed at price 0 counts as closed when its date is filled (e.g. expiry).
+    Charge entries are never open positions.
+    """
+    if trades is None or trades.empty:
+        return pd.Series(False, index=trades.index if trades is not None else [])
+
+    def col_num(name):
+        return pd.to_numeric(trades[name], errors="coerce") if name in trades.columns else pd.Series(float("nan"), index=trades.index)
+
+    def col_date(name):
+        return pd.to_datetime(trades[name], errors="coerce") if name in trades.columns else pd.Series(pd.NaT, index=trades.index)
+
+    buy, sell = col_num("buy"), col_num("sell")
+    buy_leg_open = (buy.isna() | (buy == 0)) & col_date("buy_date").isna()
+    sell_leg_open = (sell.isna() | (sell == 0)) & col_date("sale_date").isna()
+    is_trade = trades["entry_kind"].fillna("trade").eq("trade") if "entry_kind" in trades.columns else pd.Series(True, index=trades.index)
+    # a row with BOTH legs fully blank is not a position at all; require one real leg
+    has_any_leg = (buy.fillna(0) > 0) | (sell.fillna(0) > 0)
+    return is_trade & has_any_leg & (buy_leg_open | sell_leg_open)

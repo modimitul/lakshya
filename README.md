@@ -43,19 +43,43 @@ Rows whose period is not a calendar month (e.g. `YEAR 2026`) are shown under
 `#NUM!` / `#DIV/0!` cells, text months like `Jul-23` and Indian-formatted numbers
 like `1,08,959` are all handled.
 
-## Sign-in and owners
+## Login and owners
 
 Set `APP_PASSWORD` in the environment (the Lightsail setup script passes it into
-the service) and the app shows one sign-in screen: a typed **Username** and the
-single shared **Password**. A new username creates a new portfolio owner; an
-existing one opens theirs. The sidebar shows who is signed in, lets you switch
-owner, and has *Rename or add owner*, including *Make this the default owner*:
-the default owner is shown first when nobody has signed in (also settable on Home). There are no per-user passwords: anyone
-with the shared password can view every owner's data. If you need strict
-separation, ask for per-user passwords; it is a small change.
+the service) and the app shows one login screen with two tabs:
 
-Without `APP_PASSWORD` (for example when running locally) there is no sign-in
+- **Login** — an existing username plus the shared password. An unknown
+  username is refused with a pointer to the New user tab.
+- **New user** — creates a new portfolio owner (no limit on users) with the
+  same shared password and signs them in.
+
+The sidebar shows who is logged in, lets you switch owner, has *Rename or add
+owner* and *Make this the default owner* (the default owner is shown first when
+nobody has logged in; also settable on Home), and a **Logout** button. There
+are no per-user passwords: anyone with the shared password can view every
+owner's data. If you need strict separation, ask for per-user passwords; it is
+a small change.
+
+Without `APP_PASSWORD` (for example when running locally) there is no login
 screen and a single owner called "Owner" is used.
+
+## Strategy Guide and open positions
+
+- **Strategy Guide** is its own page in the menu (after Home): every trade
+  Type with its definition and Bull/Bear/Neutral bias, searchable.
+- **Trading Book → Open positions** lists trades with one leg still missing
+  (e.g. sold, not yet bought back): they stay out of every dashboard figure
+  until closed. Fill the missing price + date (0 with the expiry date for an
+  option that expired worthless) and press **Close / save** — the row moves to
+  Trades saved and starts counting in the Dashboard, which also notes how many
+  open positions are excluded.
+- **Investment Book → Open positions** lists everything still held (purchases
+  minus FIFO-matched sales) one row per stock; fill Sell qty / Sell price /
+  charges / sale month and press **Record sales** to book sales in bulk —
+  the SELL rows land in Entries saved and profit booked flows to the Dashboard.
+- **Dashboard Reports → Trading** shows Avg yearly ROI (with avg yearly CAGR)
+  beside Avg monthly ROI; **→ Investments** shows Profit booked at the bottom
+  of the page, table above chart.
 
 ## Storage
 
