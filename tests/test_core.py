@@ -713,3 +713,24 @@ def test_sharekhan_intraday_template():
     assert not open_positions_mask(t).any()
     s = monthly_summary(t, None)
     assert abs(float(s["Net Profit"].sum()) - (44.40 - 24.60 - 268.70 + 245.0)) < 0.01
+
+
+def test_clean_stock_list():
+    import pandas as pd
+    from core.parse import clean_stock_list
+
+    raw = pd.DataFrame({
+        "Sector": ["it", "Bank", "Chemicals", "", "IT"],
+        "Stock Name": ["tcs", "HDFC Bank", "SRF", "  ", "TCS"],
+        "Marketcap": ["LARGECAP", "Large cap", "midcap", "Small", "mega"],
+    })
+    df, errors, warns = clean_stock_list(raw)
+    assert not errors
+    assert df["stock"].tolist() == ["TCS", "HDFC BANK", "SRF"]          # blank dropped, dup merged
+    assert df["sector"].tolist() == ["IT", "BANK", "CHEMICALS"]
+    assert df["marketcap"].tolist() == ["Large cap", "Large cap", "Mid cap"]
+    assert any("duplicate" in w for w in warns)
+    assert any("Marketcap" in w for w in warns)                          # 'mega' not mappable
+
+    bad, errors, _ = clean_stock_list(pd.DataFrame({"Foo": [1]}))
+    assert bad is None and errors

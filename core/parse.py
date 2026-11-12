@@ -879,3 +879,82 @@ def open_positions_mask(trades: pd.DataFrame) -> pd.Series:
     # a row with BOTH legs fully blank is not a position at all; require one real leg
     has_any_leg = (buy.fillna(0) > 0) | (sell.fillna(0) > 0)
     return is_trade & has_any_leg & (buy_leg_open | sell_leg_open)
+
+
+# ------------------------------------------------------------- stock list ----
+MARKETCAP_OPTIONS = ["Large cap", "Mid cap", "Small cap"]
+
+_STOCKLIST_ALIASES = {
+    "sector": "sector", "industry": "sector",
+    "stock name": "stock", "stock": "stock", "name": "stock", "symbol": "stock", "scrip": "stock",
+    "marketcap": "marketcap", "market cap": "marketcap", "cap": "marketcap", "mcap": "marketcap",
+    "note": "note", "notes": "note", "remark": "note", "remarks": "note",
+}
+
+
+def normalise_marketcap(value) -> str:
+    text_v = "" if value is None else str(value).strip().lower()
+    if not text_v or text_v in ("nan", "none"):
+        return ""
+    if "large" in text_v:
+        return "Large cap"
+    if "mid" in text_v:
+        return "Mid cap"
+    if "small" in text_v:
+        return "Small cap"
+    return ""
+
+
+def clean_stock_list(frame: pd.DataFrame):
+    """Normalise an uploaded stock list (Sector, Stock Name, Marketcap[, Note]).
+
+    Returns (df, errors, warnings): df has columns stock, sector, marketcap, note,
+    uppercased stock names, deduped (first wins), marketcap mapped onto
+    Large cap / Mid cap / Small cap (anything else becomes blank, with a warning).
+    """
+    errors, warnings = [], []
+    if frame is None or frame.empty:
+        return None, ["The file has no rows."], warnings
+    cols = {}
+    for col in frame.columns:
+        key = str(col).strip().lower()
+        if key in _STOCKLIST_ALIASES and _STOCKLIST_ALIASES[key] not in cols:
+            cols[_STOCKLIST_ALIASES[key]] = col
+    if "stock" not in cols:
+        return None, ["No 'Stock Name' column found. Expected headers: Sector, Stock Name, Marketcap."], warnings
+    out = pd.DataFrame({"stock": frame[cols["stock"]].map(lambda v: "" if v is None else str(v).strip().upper())})
+    out["sector"] = (frame[cols["sector"]].map(lambda v: "" if v is None else str(v).strip().upper())
+                     if "sector" in cols else "")
+    raw_cap = frame[cols["marketcap"]] if "marketcap" in cols else pd.Series([""] * len(frame), index=frame.index)
+    out["marketcap"] = raw_cap.map(normalise_marketcap)
+    unmapped = (raw_cap.map(lambda v: "" if v is None else str(v).strip()).ne("")
+                & raw_cap.map(lambda v: str(v).strip().lower() not in ("nan", "none") if v is not None else False)
+                & out["marketcap"].eq(""))
+    if unmapped.any():
+        bad = sorted(set(str(v).strip() for v in raw_cap[unmapped]))[:5]
+        warnings.append(f"{int(unmapped.sum())} row(s) have a Marketcap that is not Large/Mid/Small cap "
+                        f"(e.g. {', '.join(bad)}); it was left blank.")
+    out["note"] = (frame[cols["note"]].map(lambda v: "" if v is None else str(v).strip())
+                   if "note" in cols else "")
+    out = out[out["stock"] != ""]
+    before = len(out)
+    out = out.drop_duplicates(subset="stock", keep="first").reset_index(drop=True)
+    if len(out) < before:
+        warnings.append(f"{before - len(out)} duplicate stock name(s) were merged (first row wins).")
+    if out.empty:
+        return None, ["No usable rows: every Stock Name is blank."], warnings
+    return out, errors, warnings
+
+
+def stocklist_template_bytes() -> bytes:
+    """A small xlsx showing the stock-list upload format."""
+    import io
+    sample = pd.DataFrame({
+        "Sector": ["INDEX", "IT", "BANK", "CHEMICALS"],
+        "Stock Name": ["NIFTY", "TCS", "HDFC BANK", "SRF"],
+        "Marketcap": ["", "Large cap", "Large cap", "Mid cap"],
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        sample.to_excel(writer, index=False, sheet_name="Stocks")
+    return buf.getvalue()

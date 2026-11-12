@@ -240,18 +240,32 @@ def test_stocks_page_and_encrypted_store():
     at = app("screens/stocks.py")
     editor = next(e for e in at.get("data_editor") if "Stock" in e.value.columns)
     at.session_state[editor.key] = {"edited_rows": {}, "added_rows": [
-        {"Stock": "nifty", "Note": "index"}, {"Stock": "TCS", "Note": ""}, {"Stock": "tcs", "Note": "dup"}],
+        {"Stock": "nifty", "Sector": "index", "Marketcap": "", "Note": "index"},
+        {"Stock": "TCS", "Sector": "IT", "Marketcap": "Large cap", "Note": ""},
+        {"Stock": "tcs", "Sector": "IT", "Marketcap": "Large cap", "Note": "dup"}],
         "deleted_rows": []}
     by_label(at.button, "Save list").click().run()
     assert not at.exception, [e.value for e in at.exception]
     saved = store.load_frame("_shared", "stocks")
     assert saved["stock"].tolist() == ["NIFTY", "TCS"]        # uppercased, deduped
+    assert saved.loc[saved["stock"] == "TCS", "marketcap"].iloc[0] == "Large cap"
+    assert saved.loc[saved["stock"] == "NIFTY", "sector"].iloc[0] == "INDEX"
+
+    # delete via the grid: tick 🗑 on NIFTY and save again
+    at2 = app("screens/stocks.py")
+    editor = next(e for e in at2.get("data_editor") if "Stock" in e.value.columns)
+    disp = editor.value.reset_index(drop=True)
+    pos = int(disp.index[disp["Stock"] == "NIFTY"][0])
+    at2.session_state[editor.key] = {"edited_rows": {str(pos): {"Delete": True}}, "added_rows": [], "deleted_rows": []}
+    by_label(at2.button, "Save list").click().run()
+    saved = store.load_frame("_shared", "stocks")
+    assert saved["stock"].tolist() == ["TCS"]
 
     # the saved list feeds the manual-entry dropdown
     at2 = app("screens/trading_input.py")
-    at2.radio[0].set_value("Add trades manually").run()
+    at2.get("radio")[0].set_value("Add trades manually").run()
     stock_sel = by_label(at2.selectbox, "Stock")
-    assert "NIFTY" in stock_sel.options and "TCS" in stock_sel.options and "➕ New stock…" in stock_sel.options
+    assert "TCS" in stock_sel.options and "➕ New stock…" in stock_sel.options and "NIFTY" not in stock_sel.options
 
     # encrypted at rest: no plaintext stock names in the DB file
     import os

@@ -165,12 +165,12 @@ else:
             NEW_STOCK = "➕ New stock…"
             if _stock_options:
                 stock_pick = b.selectbox("Stock", sorted(_stock_options) + [NEW_STOCK],
-                                         help="Manage this list in the Stocks page of the menu.")
+                                         help="Manage this list in Stocks Management (menu).")
                 stock_typed = b.text_input("If ➕ New stock…, type it", placeholder="e.g. TCS").strip().upper()
                 stock = stock_typed if (stock_pick == NEW_STOCK or stock_typed) else stock_pick
             else:
                 stock = b.text_input("Stock", placeholder="e.g. TCS",
-                                     help="Tip: fill the Stocks page (menu) to get a dropdown here.").strip().upper()
+                                     help="Tip: fill Stocks Management (menu) to get a dropdown here.").strip().upper()
             strike = c.number_input("Strike price" + (" *" if needs_strike else " (optional)"), min_value=0, step=50, value=0,
                                     help=("Required for option strategies. Whole numbers only — strikes have no decimals."
                                           if needs_strike else "Not applicable to this type; leave 0."))
@@ -240,11 +240,11 @@ else:
                     known = (set(stock_frame["stock"].astype(str).str.upper())
                              if stock_frame is not None and "stock" in stock_frame.columns else set())
                     if stock and stock not in known:
-                        addition = pd.DataFrame([{"stock": stock, "note": ""}])
+                        addition = pd.DataFrame([{"stock": stock, "sector": "", "marketcap": "", "note": ""}])
                         updated_list = pd.concat([stock_frame, addition], ignore_index=True) if stock_frame is not None else addition
                         store.save_frame("_shared", "stocks", updated_list)
                         state.bump("stocks_version")
-                        st.caption(f"“{stock}” was added to the Stocks list (menu → Stocks).")
+                        st.caption(f"“{stock}” was added to the stock list (menu → Stocks Management).")
 
     st.page_link("screens/strategy_guide.py", label="Open the Strategy Guide (definitions and bias)", icon="📖")
 

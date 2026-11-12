@@ -158,7 +158,7 @@ trading = st.Page("screens/trading_input.py", title="Trading Book", icon=":mater
 portfolio = st.Page("screens/portfolio_input.py", title="Investment Book", icon=":material/account_balance:")
 benchmarks = st.Page("screens/benchmarks.py", title="Benchmarks", icon=":material/show_chart:")
 reports = st.Page("screens/reports.py", title="Dashboard Reports", icon=":material/bar_chart:")
-stocks_page = st.Page("screens/stocks.py", title="Stocks", icon=":material/format_list_bulleted:")
+stocks_page = st.Page("screens/stocks.py", title="Stocks Management", icon=":material/format_list_bulleted:")
 users_page = st.Page("screens/users_admin.py", title="User management", icon=":material/manage_accounts:")
 
 st.navigation([home, guide, trading, portfolio, benchmarks, reports, stocks_page, users_page]).run()
