@@ -813,6 +813,9 @@ def recompute_trades(df: pd.DataFrame, rows: list) -> pd.DataFrame:
         if "month" in out.columns and "buy_date" in out.columns:
             if pd.isna(out.at[idx, "month"]) and pd.notna(out.at[idx, "buy_date"]):
                 out.at[idx, "month"] = pd.Timestamp(out.at[idx, "buy_date"]).to_period("M").to_timestamp()
+        if "month" in out.columns and pd.notna(out.at[idx, "month"]):
+            # an edited Month may be any day of the month; store its month start
+            out.at[idx, "month"] = pd.Timestamp(out.at[idx, "month"]).to_period("M").to_timestamp()
         if "entry_kind" in out.columns:
             typ = str(out.at[idx, "type"]) if "type" in out.columns and pd.notna(out.at[idx, "type"]) else ""
             zero_trade = (math.isnan(pl) or pl == 0) and (math.isnan(buy) or buy == 0) and (math.isnan(sell) or sell == 0)
