@@ -53,6 +53,21 @@ def set_users(new_users: list[dict]) -> None:
     store.save_users(new_users)
 
 
+def refresh_users() -> list[dict]:
+    """Re-read users from the database (after store-level edits such as password changes)."""
+    st.session_state["users"] = store.load_users()
+    return st.session_state["users"]
+
+
+def is_admin() -> bool:
+    """True for the administrator login, or when the app runs without a password gate."""
+    import os
+    from . import ADMIN_SLUG
+    if not os.environ.get("APP_PASSWORD", ""):
+        return True
+    return st.session_state.get("signed_in_as") == ADMIN_SLUG
+
+
 def current_user() -> str:
     slugs = [u["slug"] for u in users()]
     if not slugs:

@@ -29,8 +29,8 @@ def app(page=None):
     return at
 
 
-def by_label(widgets, label):
-    return next(w for w in widgets if w.label == label)
+def by_label(widgets, label, n=0):
+    return [w for w in widgets if w.label == label][n]
 
 
 @pytest.mark.parametrize("page", [None, "screens/trading_input.py", "screens/portfolio_input.py", "screens/reports.py"])
@@ -88,47 +88,176 @@ def test_portfolio_manual_form_adds_an_entry():
 
 def test_login_and_new_user_tabs(monkeypatch):
     monkeypatch.setenv("APP_PASSWORD", "secret")
-    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
-    at.run()
-    assert not at.exception
+
+    def fresh():
+        at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+        at.run()
+        return at
+
+    def create(at, name, invite, pw, pw2=None):
+        by_label(at.text_input, "Choose a username").set_value(name)
+        at.text_input(key="new_user_invite").set_value(invite)
+        at.text_input(key="new_user_pw").set_value(pw)
+        at.text_input(key="new_user_pw2").set_value(pw2 if pw2 is not None else pw)
+        by_label(at.button, "Create login").click().run()
+        return at
+
+    # unknown username on Login is rejected
+    at = fresh()
     assert not at.sidebar.selectbox, "gate should hide the app"
-    # Login tab: unknown username is rejected, it does not silently create an owner
     by_label(at.text_input, "Username").set_value("Priya")
-    by_label(at.text_input, "Password").set_value("secret")
+    by_label(at.text_input, "Password", 0).set_value("whatever")
     by_label(at.button, "Login").click().run()
     assert any("No login named" in e.value for e in at.error)
-    # New user tab: wrong password rejected, correct password creates the owner and signs in
-    by_label(at.text_input, "Choose a username").set_value("Priya")
-    at.text_input(key="new_user_pw").set_value("wrong")
-    by_label(at.button, "Create login").click().run()
-    assert any("not correct" in e.value for e in at.error)
-    by_label(at.text_input, "Choose a username").set_value("Priya")
-    at.text_input(key="new_user_pw").set_value("secret")
-    by_label(at.button, "Create login").click().run()
+
+    # New user: wrong invite, short password, mismatch — then success with a personal password
+    at = fresh()
+    create(at, "Priya", "wrong-invite", "mypw1234")
+    assert any("invite" in e.value for e in at.error)
+    at = fresh()
+    create(at, "Priya", "secret", "abc")
+    assert any("at least 4" in e.value for e in at.error)
+    at = fresh()
+    create(at, "Priya", "secret", "mypw1234", "different")
+    assert any("do not match" in e.value for e in at.error)
+    at = fresh()
+    create(at, "Priya", "secret", "mypw1234")
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["signed_in_as"] == "priya"
-    assert at.session_state["user"] == "priya"
-    # fresh session: a second owner via New user, then an existing-name login works
-    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
-    at2.run()
-    by_label(at2.text_input, "Choose a username").set_value("Rahul")
-    at2.text_input(key="new_user_pw").set_value("secret")
-    by_label(at2.button, "Create login").click().run()
-    names = sorted(u["name"] for u in at2.session_state["users"])
-    assert names == ["Priya", "Rahul"]
-    at3 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
-    at3.run()
-    by_label(at3.text_input, "Username").set_value("Priya")
-    by_label(at3.text_input, "Password").set_value("secret")
-    by_label(at3.button, "Login").click().run()
-    assert not at3.exception and at3.session_state["signed_in_as"] == "priya"
-    # duplicate username on New user is refused
-    at4 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
-    at4.run()
-    by_label(at4.text_input, "Choose a username").set_value("priya")
-    at4.text_input(key="new_user_pw").set_value("secret")
-    by_label(at4.button, "Create login").click().run()
-    assert any("already exists" in e.value for e in at4.error)
+    # non-admin: locked to their own data, no owner switcher
+    assert not at.sidebar.selectbox
+
+    # login with the personal password works; the shared password does NOT (not admin)
+    at = fresh()
+    by_label(at.text_input, "Username").set_value("Priya")
+    by_label(at.text_input, "Password", 0).set_value("secret")
+    by_label(at.button, "Login").click().run()
+    assert any("not correct" in e.value for e in at.error)
+    by_label(at.text_input, "Username").set_value("Priya")
+    by_label(at.text_input, "Password", 0).set_value("mypw1234")
+    by_label(at.button, "Login").click().run()
+    assert at.session_state["signed_in_as"] == "priya"
+
+    # administrator: created like anyone, master password always works, sees the owner switcher
+    at = fresh()
+    create(at, "ModiMitul", "secret", "adminpw1")
+    assert at.session_state["signed_in_as"] == "modimitul"
+    assert at.sidebar.selectbox, "admin should see the owner switcher"
+    at = fresh()
+    by_label(at.text_input, "Username").set_value("ModiMitul")
+    by_label(at.text_input, "Password", 0).set_value("secret")   # master password
+    by_label(at.button, "Login").click().run()
+    assert at.session_state["signed_in_as"] == "modimitul"
+
+    # duplicate username is refused
+    at = fresh()
+    create(at, "priya", "secret", "whatever1")
+    assert any("already exists" in e.value for e in at.error)
+
+
+def by_label_n(widgets, label, n=0):
+    return [w for w in widgets if w.label == label][n]
+
+
+def test_user_management_and_family_home(monkeypatch):
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+    import pandas as pd
+    from core import store, crypto
+    from core.parse import clean
+
+    # admin + one family member with data
+    users = store.add_user(store.load_users(), "ModiMitul")
+    users = store.add_user(users, "Priya")
+    users[0]["password_hash"] = crypto.hash_password("adminpw1")
+    users[1]["password_hash"] = crypto.hash_password("priyapw1")
+    store.save_users(users)
+    raw = pd.DataFrame({
+        "Month": ["Apr-25"], "Buy Date": [pd.Timestamp("2025-04-07")], "Stock": ["TCS"],
+        "Type": ["Naked Call Sell"], "Strike Price": [3400], "QTY": [175], "Buy": [52.13],
+        "Sale Date": [pd.Timestamp("2025-04-16")], "Sell": [58.88], "Brokerage": [48.5],
+    })
+    store.save_frame("priya", "trades", clean(raw).trades)
+    from core.portfolio import clean_portfolio
+    port = pd.DataFrame({"Month": ["Jul-23"], "Sector": ["IT"], "Stock": ["TCS"], "QTY": [30], "Buy": [3385.0],
+                         "Cost": [30 * 3385.0]})
+    store.save_frame("priya", "portfolio", clean_portfolio(port).entries)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.run()
+    by_label(at.text_input, "Username").set_value("ModiMitul")
+    [w for w in at.text_input if w.label == "Password"][0].set_value("adminpw1")
+    by_label(at.button, "Login").click().run()
+    assert at.session_state["signed_in_as"] == "modimitul"
+
+    # Home: no family members marked yet
+    assert any("No family members yet" in i.value for i in at.info)
+
+    # User management: tick Priya as family and save
+    at.switch_page("screens/users_admin.py").run()
+    assert not at.exception, [e.value for e in at.exception]
+    grid = next(e for e in at.get("data_editor") if "Family" in e.value.columns)
+    disp = grid.value.reset_index(drop=True)
+    pos = int(disp.index[disp["Username"] == "Priya"][0])
+    at.session_state[grid.key] = {"edited_rows": {str(pos): {"Family": True}}, "added_rows": [], "deleted_rows": []}
+    by_label(at.button, "Save users").click().run()
+    assert any(u["slug"] == "priya" and u["family"] for u in store.load_users())
+
+    # admin resets Priya's password
+    by_label(at.selectbox, "User").set_value("priya")
+    by_label(at.text_input, "New password for this user").set_value("newpw999")
+    by_label(at.button, "Reset password").click().run()
+    priya = next(u for u in store.load_users() if u["slug"] == "priya")
+    assert crypto.verify_password("newpw999", priya["password_hash"])
+
+    # Home now shows the family trading KPIs and asset allocation
+    at.switch_page("screens/home.py").run()
+    assert not at.exception, [e.value for e in at.exception]
+    found_kpis = found_alloc = False
+    for frame in at.get("dataframe"):
+        cols = list(frame.value.columns)
+        if {"Member", "Net profit", "Avg yearly ROI", "Win rate", "Best month", "Worst month"} <= set(cols):
+            row = frame.value.iloc[0]
+            assert row["Member"] == "Priya" and row["Net profit"] != "—"
+            found_kpis = True
+        if "Asset class" in cols and "% of family" in cols:
+            assert "Priya" in cols
+            found_alloc = True
+    assert found_kpis and found_alloc
+
+    # deleting Priya removes login and data
+    at.switch_page("screens/users_admin.py").run()
+    by_label(at.selectbox, "User to delete").set_value("priya")
+    at.checkbox(key="del_sure").set_value(True).run()
+    by_label(at.button, "Delete this user").click().run()
+    assert all(u["slug"] != "priya" for u in store.load_users())
+    assert store.load_frame("priya", "trades") is None
+
+
+def test_stocks_page_and_encrypted_store():
+    import pandas as pd
+    from core import store
+
+    at = app("screens/stocks.py")
+    editor = next(e for e in at.get("data_editor") if "Stock" in e.value.columns)
+    at.session_state[editor.key] = {"edited_rows": {}, "added_rows": [
+        {"Stock": "nifty", "Note": "index"}, {"Stock": "TCS", "Note": ""}, {"Stock": "tcs", "Note": "dup"}],
+        "deleted_rows": []}
+    by_label(at.button, "Save list").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    saved = store.load_frame("_shared", "stocks")
+    assert saved["stock"].tolist() == ["NIFTY", "TCS"]        # uppercased, deduped
+
+    # the saved list feeds the manual-entry dropdown
+    at2 = app("screens/trading_input.py")
+    at2.radio[0].set_value("Add trades manually").run()
+    stock_sel = by_label(at2.selectbox, "Stock")
+    assert "NIFTY" in stock_sel.options and "TCS" in stock_sel.options and "➕ New stock…" in stock_sel.options
+
+    # encrypted at rest: no plaintext stock names in the DB file
+    import os
+    db = os.path.join(os.environ["LAKSHYA_DATA_DIR"], "lakshya.db")
+    blob = open(db, "rb").read()
+    assert b"NIFTY" not in blob and b"TCS" not in blob
 
 
 def test_open_positions_flow_and_dashboard_exclusion():
@@ -165,8 +294,8 @@ def test_open_positions_flow_and_dashboard_exclusion():
     assert any(m.label == "Avg yearly ROI" for m in at.metric)
     # the open NIFTY row is nowhere on the dashboard — not even in the trade log tables
     for frame in at.get("dataframe"):
-        vals = frame.value.astype(str).to_numpy().ravel().tolist()
-        assert not any("NIFTY" in v for v in vals), "open position leaked into a dashboard table"
+        vals = frame.value.to_numpy().ravel().tolist()
+        assert not any("NIFTY" in str(v) for v in vals), "open position leaked into a dashboard table"
 
 
 def test_strategy_guide_page_renders():
@@ -208,7 +337,9 @@ def test_manual_form_dates_follow_opening_side():
     # buy-first: entering only the buy price must be refused without... actually buy-only is allowed (open long);
     # but a buy-first type with ONLY a sell price is refused
     by_label(at.selectbox, "Type").set_value("Naked Call Buy").run()
-    by_label(at.text_input, "Stock").set_value("TCS")
+    # NIFTY was auto-added to the shared Stocks list, so the form now shows a dropdown;
+    # type the new name in the "new stock" box instead
+    by_label(at.text_input, "If ➕ New stock…, type it").set_value("TCS")
     by_label(at.number_input, "Strike price *").set_value(3400)
     by_label(at.number_input, "Qty").set_value(100)
     by_label(at.number_input, "Sell price").set_value(58.88)

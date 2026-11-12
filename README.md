@@ -43,6 +43,33 @@ Rows whose period is not a calendar month (e.g. `YEAR 2026`) are shown under
 `#NUM!` / `#DIV/0!` cells, text months like `Jul-23` and Indian-formatted numbers
 like `1,08,959` are all handled.
 
+## What's new in 3.0
+
+- **Personal passwords**: each login has its own password. `APP_PASSWORD` is now the
+  *invite code* for creating a login and the administrator's master password.
+  Users from the shared-password era log in once with the old shared password,
+  which then becomes their personal one. **Forgot password?** The administrator
+  resets it in *User management*.
+- **Administrator**: the login `ModiMitul` (slug `modimitul`). Only the
+  administrator can switch portfolio owners, manage owners/users, and see the
+  family dashboards; every other login sees only its own data.
+- **User management** (menu): change your own password; the administrator can
+  reset passwords, delete a user (with all their data), and tick **Family** on
+  logins — family members' combined dashboards appear on the administrator's Home.
+- **Stocks** (menu): one shared list of instruments with add / edit / delete /
+  save; it feeds the Stock dropdown in the Trading Book's manual entry, and a
+  newly typed name is added to the list automatically.
+- **Encrypted at rest**: all books are stored in the database as encrypted
+  blobs (Fernet/AES). The key lives in `LAKSHYA_SECRET_KEY` (optional) or in
+  `<data dir>/.secret.key` (created automatically, mode 600). **Back up the key
+  file together with the database** — without it the data is unreadable. Data
+  from older versions is migrated (and the plaintext removed) on first read.
+- **Second upload template**: Sharekhan-style intraday sheets (Buy Date, Stock,
+  Qty, Buy, Sell, Profit/Loss, Brokerage and Other Charges, numeric month;
+  no Type/Sale Date/Strike) import correctly: rows become Equity trades with
+  same-day exits, the running Gross-Profit column is recomputed per row, and
+  EQUITY charge rows count against net profit.
+
 ## Login and owners
 
 Set `APP_PASSWORD` in the environment (the Lightsail setup script passes it into

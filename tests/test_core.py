@@ -282,7 +282,7 @@ def test_legacy_csv_is_imported_once(tmp_path, monkeypatch):
     (tmp_path / "jyoti" / "meta.json").write_text(json.dumps({"trades_source": "Book1.xlsx"}))
     (tmp_path / "users.json").write_text(json.dumps([{"slug": "jyoti", "name": "Jyoti"}]))
 
-    assert store.load_users() == [{"slug": "jyoti", "name": "Jyoti"}]
+    assert [{"slug": u["slug"], "name": u["name"]} for u in store.load_users()] == [{"slug": "jyoti", "name": "Jyoti"}]
     trades = store.load_frame("jyoti", "trades")
     assert trades["month"].iloc[0] == pd.Timestamp("2026-04-01") and trades["gross_profit"].iloc[0] == 83353.0
     assert float(store.load_frame("jyoti", "capital")["Capital"].iloc[0]) == 3700000
@@ -673,3 +673,43 @@ def test_sell_first_entry_without_buy_date_groups_by_sale_month():
     t = r.trades
     assert str(t["month"].iloc[0])[:7] == "2025-11"      # grouped by the sale month
     assert bool(open_positions_mask(t).iloc[0])          # and it is an open position
+
+
+def test_sharekhan_intraday_template():
+    """The second template: no Type / Sale Date / Strike, numeric month, running Gross Profit."""
+    import pandas as pd
+    from core.parse import clean
+    from core.metrics import monthly_summary
+
+    raw = pd.DataFrame({
+        "Buy Date": [pd.Timestamp("2026-04-01"), pd.Timestamp("2026-04-01"), pd.Timestamp("2026-04-01"),
+                     pd.Timestamp("2026-05-04")],
+        "Stock": ["PIDILITIND", "INFY", "EQUITY", "TCS"],
+        "Qty": [10, 10, 1, 5],
+        "Buy": [1301.43, 1280.33, 0.0, 3300.0],
+        "Cost": [13014.30, 12803.30, 0.0, 16500.0],
+        "Sell": [1305.87, 1277.87, 0.0, 3349.0],
+        "Sale": [13058.70, 12778.70, 0.0, 16745.0],
+        "Profit /Loss": [44.40, -24.60, 0.0, 245.0],
+        "Brokerage and Other Charges": [None, None, 268.70, None],
+        "Gross Profit": [44.40, 19.80, -248.90, -3.90],      # RUNNING total, not per-row
+        "NetProfit": [44.40, 19.80, -248.90, -3.90],
+        "%ROI": [0.34, -0.19, 0.0, 1.48],
+        "month": [4.0, 4.0, 4.0, 5.0],
+    })
+    res = clean(raw)
+    assert not res.errors and len(res.excluded) == 0
+    t = res.trades
+    # per-row gross profit recomputed from Profit/Loss, not the running column
+    by_stock = dict(zip(t["stock"], t["gross_profit"]))
+    assert abs(by_stock["INFY"] - (-24.60)) < 0.01
+    assert abs(by_stock["EQUITY"] - (-268.70)) < 0.01          # charge row counts against profit
+    # numeric month + buy-date year combine; charge row included in its month
+    assert t["month"].dt.strftime("%b-%y").tolist() == ["Apr-26", "Apr-26", "Apr-26", "May-26"]
+    assert (t["entry_kind"] == "charge").sum() == 1
+    assert set(t.loc[t["entry_kind"] == "trade", "type"]) == {"Equity"}
+    # intraday: sold rows exit the same day, so nothing is an open position
+    from core.parse import open_positions_mask
+    assert not open_positions_mask(t).any()
+    s = monthly_summary(t, None)
+    assert abs(float(s["Net Profit"].sum()) - (44.40 - 24.60 - 268.70 + 245.0)) < 0.01

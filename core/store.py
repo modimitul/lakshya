@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 # Used only when there is no sign-in screen (no APP_PASSWORD) and no owners yet.
 DEFAULT_USERS = [{"slug": "owner", "name": "Owner"}]
 
-FRAME_TABLES = ("trades", "excluded", "capital", "benchmarks", "portfolio", "benchmark_monthly", "sips")
+FRAME_TABLES = ("trades", "excluded", "capital", "benchmarks", "portfolio", "benchmark_monthly", "sips", "stocks")
 
 # Type restoration on read: SQLite is loosely typed, so we re-type by column name.
 DATE_COLUMNS = {
@@ -39,6 +39,7 @@ DATE_COLUMNS = {
     "benchmarks": [],
     "benchmark_monthly": ["month"],
     "sips": ["start_month", "last_applied"],
+    "stocks": [],
 }
 STRING_COLUMNS = ("stock", "type", "sector", "Month", "period_label", "source_sheet", "entry_kind", "strike_label", "fund")
 
@@ -51,6 +52,14 @@ owners_table = Table(
     Column("slug", String(80), primary_key=True),
     Column("name", String(120), nullable=False),
     Column("position", String(8), nullable=False, default="0"),
+    Column("password_hash", Text),
+    Column("family", String(1), nullable=False, default="0"),
+)
+frames_enc_table = Table(
+    "frames_enc", _metadata,
+    Column("owner", String(80), primary_key=True),
+    Column("name", String(40), primary_key=True),
+    Column("payload", Text(16_000_000)),   # MEDIUMTEXT on MySQL; plain TEXT on SQLite
 )
 meta_table = Table(
     "meta", _metadata,
@@ -85,6 +94,12 @@ def engine() -> Engine:
         with eng.begin() as conn:
             for table in FRAME_TABLES:
                 conn.execute(text(f'CREATE TABLE IF NOT EXISTS "{table}" (owner VARCHAR(80))'))
+            for ddl in ('ALTER TABLE owners ADD COLUMN password_hash TEXT',
+                        "ALTER TABLE owners ADD COLUMN family VARCHAR(1) DEFAULT '0'"):
+                try:
+                    conn.execute(text(ddl))
+                except Exception:
+                    pass  # column already there
         _engines[url] = eng
         _migrate_legacy_csv(eng)
     return _engines[url]
@@ -98,9 +113,11 @@ def slugify(name: str) -> str:
 # ------------------------------------------------------------------ users --
 def load_users() -> list[dict]:
     with engine().connect() as conn:
-        rows = conn.execute(select(owners_table.c.slug, owners_table.c.name, owners_table.c.position)).all()
+        rows = conn.execute(select(owners_table.c.slug, owners_table.c.name, owners_table.c.position,
+                                   owners_table.c.password_hash, owners_table.c.family)).all()
     rows.sort(key=lambda r: int(r.position or 0))
-    return [{"slug": r.slug, "name": r.name} for r in rows]
+    return [{"slug": r.slug, "name": r.name, "password_hash": r.password_hash or "",
+             "family": str(r.family or "0") == "1"} for r in rows]
 
 
 def save_users(users: list[dict]) -> None:
@@ -108,7 +125,9 @@ def save_users(users: list[dict]) -> None:
         conn.execute(delete(owners_table))
         if users:
             conn.execute(owners_table.insert(), [
-                {"slug": u["slug"], "name": u["name"], "position": str(i)} for i, u in enumerate(users)
+                {"slug": u["slug"], "name": u["name"], "position": str(i),
+                 "password_hash": u.get("password_hash") or "",
+                 "family": "1" if u.get("family") else "0"} for i, u in enumerate(users)
             ])
 
 
@@ -118,7 +137,7 @@ def add_user(users: list[dict], name: str) -> list[dict]:
     taken = {u["slug"] for u in users}
     while slug in taken:
         slug, n = f"{base}-{n}", n + 1
-    return users + [{"slug": slug, "name": name.strip()}]
+    return users + [{"slug": slug, "name": name.strip(), "password_hash": "", "family": False}]
 
 
 def find_user(users: list[dict], name: str) -> dict | None:
@@ -130,11 +149,20 @@ def rename_user(users: list[dict], slug: str, new_name: str) -> list[dict]:
     return [{**u, "name": new_name.strip()} if u["slug"] == slug else u for u in users]
 
 
+def set_user_fields(slug: str, **fields) -> list[dict]:
+    """Update one user's stored fields (password_hash, family, ...) and return the fresh list."""
+    users = load_users()
+    users = [{**u, **fields} if u["slug"] == slug else u for u in users]
+    save_users(users)
+    return users
+
+
 def delete_user_data(slug: str) -> None:
     """Remove an owner and every row they own."""
     with _write_lock, engine().begin() as conn:
         for table in FRAME_TABLES:
             conn.execute(text(f'DELETE FROM "{table}" WHERE owner = :o'), {"o": slug})
+        conn.execute(delete(frames_enc_table).where(frames_enc_table.c.owner == slug))
         conn.execute(delete(meta_table).where(meta_table.c.owner == slug))
         conn.execute(delete(owners_table).where(owners_table.c.slug == slug))
 
@@ -195,29 +223,48 @@ def _sql_type(series: pd.Series) -> str:
 
 
 def save_frame(slug: str, name: str, frame: pd.DataFrame | None) -> None:
-    """Replace this owner's rows in `name`, atomically. None/empty deletes them."""
-    from sqlalchemy import inspect
+    """Replace this owner's frame, atomically, stored encrypted at rest. None/empty deletes it."""
+    import pickle
+
+    from . import crypto
 
     eng = engine()
     with _write_lock, eng.begin() as conn:
+        # plaintext rows from older versions are removed either way
         conn.execute(text(f'DELETE FROM "{name}" WHERE owner = :o'), {"o": slug})
+        conn.execute(delete(frames_enc_table).where(
+            (frames_enc_table.c.owner == slug) & (frames_enc_table.c.name == name)))
         if frame is None or frame.empty:
             return
-        prepared = _prepare(frame, slug)
-        existing = {c["name"] for c in inspect(conn).get_columns(name)}
-        for col in prepared.columns:
-            if col not in existing:
-                conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN "{col}" {_sql_type(prepared[col])}'))
-        prepared.to_sql(name, conn, if_exists="append", index=False)
+        payload = crypto.encrypt_bytes(pickle.dumps(frame, protocol=4))
+        conn.execute(frames_enc_table.insert().values(owner=slug, name=name, payload=payload))
 
 
 def load_frame(slug: str, name: str) -> pd.DataFrame | None:
+    import pickle
+
+    from . import crypto
+
     eng = engine()
+    with eng.connect() as conn:
+        row = conn.execute(select(frames_enc_table.c.payload).where(
+            (frames_enc_table.c.owner == slug) & (frames_enc_table.c.name == name))).first()
+    if row is not None:
+        try:
+            frame = pickle.loads(crypto.decrypt_bytes(row.payload))
+        except (crypto.InvalidToken, Exception):
+            raise RuntimeError(
+                f"Could not decrypt '{name}' for owner '{slug}'. The encryption key "
+                "(LAKSHYA_SECRET_KEY or the data dir's .secret.key file) does not match this database.")
+        return None if frame is None or frame.empty else frame
+    # fall back to (and migrate away from) the plaintext table of older versions
     with eng.connect() as conn:
         frame = pd.read_sql(text(f'SELECT * FROM "{name}" WHERE owner = :o'), conn, params={"o": slug})
     if frame.empty:
         return None
-    return _restore(frame, name)
+    restored = _restore(frame, name)
+    save_frame(slug, name, restored)   # re-save encrypted; deletes the plaintext rows
+    return restored
 
 
 # ------------------------------------------------------------------- meta --

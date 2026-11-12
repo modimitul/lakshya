@@ -372,11 +372,30 @@ def clean(raw: pd.DataFrame) -> ParseResult:
         df["brokerage"] = df["brokerage"].fillna(0)
     if "gross_profit" not in df and "pl" in df:
         df["gross_profit"] = df["pl"] - df.get("brokerage", 0)
+    elif "gross_profit" in df and "pl" in df:
+        # Some sheets (e.g. Sharekhan intraday) carry a RUNNING total in Gross Profit;
+        # the per-row truth is Profit/Loss minus charges. Recompute where they disagree.
+        recomputed = df["pl"] - (df["brokerage"].fillna(0) if "brokerage" in df else 0)
+        has_pl = df["pl"].notna()
+        mismatch = has_pl & (coerce_numeric(df["gross_profit"]).fillna(recomputed) - recomputed).abs().gt(0.01)
+        if mismatch.any():
+            df.loc[has_pl, "gross_profit"] = recomputed[has_pl]
+            result.notes.append("Gross Profit was recalculated per row (the file's Gross Profit column "
+                                "looks like a running total; Profit/Loss − charges is used instead).")
+    if "sale_date" not in df and {"buy_date", "sell"} <= set(df):
+        # Intraday sheets have no Sale Date column: the sale happened the same day.
+        sold = df["sell"].fillna(0) > 0
+        if sold.any():
+            df["sale_date"] = df["buy_date"].where(sold)
+            result.notes.append("No Sale Date column: sold rows are treated as same-day (intraday) exits.")
     if "inv_amount" not in df and {"margin", "lot"} <= set(df):
         df["inv_amount"] = df["margin"] * df["lot"]
     if "roi" not in df and {"pl", "inv_amount"} <= set(df):
         inv = df["inv_amount"].where(df["inv_amount"] > 0)
         df["roi"] = df["pl"] / inv * 100
+    elif "roi" not in df and {"pl", "cost_value"} <= set(df):
+        cost = df["cost_value"].where(df["cost_value"] > 0)
+        df["roi"] = df["pl"] / cost * 100   # equity/intraday: return on the amount deployed
 
     # Charge entries (brokerage, DP/AMC/pledge charges ...) are costs, not trades:
     # they count in Net Profit and Brokerage but not in trade counts or win rate.
@@ -388,7 +407,8 @@ def clean(raw: pd.DataFrame) -> ParseResult:
         charge = label_hit | structural
         df.loc[charge, "entry_kind"] = "charge"
         if "type" not in df:
-            df["type"] = pd.Series([pd.NA] * len(df), index=df.index, dtype="string")
+            df["type"] = pd.Series(["Equity"] * len(df), index=df.index, dtype="string")
+            result.notes.append("No Type column in this sheet: rows are recorded as Equity trades.")
         df["type"] = df["type"].astype("string").map(lambda v: canonical_type(v) if pd.notna(v) else v)
         df.loc[charge, "type"] = CHARGE_TYPE
         if "strike" in df:
@@ -409,6 +429,18 @@ def clean(raw: pd.DataFrame) -> ParseResult:
             n_filled = int((blank_month & month.notna()).sum())
             if n_filled:
                 result.notes.append(f"{n_filled} rows had no Month; their Buy Date month was used.")
+        if month.isna().any():
+            # A numeric Month (1..12, e.g. Sharekhan's '4.0') is a month number:
+            # combine it with the row's Buy/Sale Date year.
+            num_m = coerce_numeric(df["month"])
+            for date_col in ("buy_date", "sale_date"):
+                fixable = month.isna() & num_m.between(1, 12) & (df[date_col].notna() if date_col in df else False)
+                if getattr(fixable, "any", lambda: False)():
+                    combined = pd.to_datetime(pd.DataFrame({
+                        "year": df.loc[fixable, date_col].dt.year,
+                        "month": num_m[fixable].astype(int),
+                        "day": 1}), errors="coerce")
+                    month = month.where(~fixable, combined.reindex(month.index))
         if "sale_date" in df and month.isna().any():
             month = month.fillna(_to_month_start(df["sale_date"]).where(month.isna()))
     elif "buy_date" in df:
