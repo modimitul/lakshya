@@ -60,6 +60,8 @@ def save_portfolio(entries: pd.DataFrame | None, source: str) -> None:
 posted = run_autopost()
 if posted:
     st.success(f"SIP auto-post: added {posted} instalment(s) that fell due. See SIP plans below.")
+for _flash in st.session_state.pop("investbook_flash", []):
+    st.success(_flash)
 entries = state.get_frame("portfolio")
 
 mode = st.radio("How do you want to provide holdings?", ["Upload a file", "Add entries manually", "Record a sale"],
@@ -166,6 +168,50 @@ elif mode == "Record a sale":
                         last = sales.iloc[-1]
                         st.success(f"Recorded sale of {qty:g} {stock}: profit booked {inr(last['profit'], prefix='₹')}"
                                    + (f", ROI {last['roi']:.1f}%, CAGR {last['cagr']:.1f}% over {last['years']:.1f} years" if pd.notna(last["cagr"]) else ""))
+
+        # ------------------------------------------------ sales recorded ----
+        sells = entries[entries["side"] == "sell"] if "side" in entries.columns else entries.iloc[0:0]
+        if not sells.empty:
+            st.divider()
+            st.markdown(f"**Sales recorded ({len(sells):,})**")
+            st.caption("Tick **Remove** on a wrongly recorded sale and press **Remove selected sales** to undo it — "
+                       "the sold quantity goes back into holdings (purchases re-match FIFO automatically) and the "
+                       "Dashboard's profit booked updates.")
+            s_order = sells.sort_values("month", ascending=False).index
+            sgrid = pd.DataFrame({
+                "Remove": False,
+                "Sold in": pd.to_datetime(entries.loc[s_order, "month"]),
+                "Stock": entries.loc[s_order, "stock"].astype(str),
+                "Sector": entries.loc[s_order, "sector"].astype(str),
+                "Qty": pd.to_numeric(entries.loc[s_order, "qty"], errors="coerce"),
+                "Sell price": pd.to_numeric(entries.loc[s_order, "buy"], errors="coerce"),
+                "Sale value": pd.to_numeric(entries.loc[s_order, "cost"], errors="coerce"),
+            })
+            sedited = st.data_editor(
+                sgrid, hide_index=True, width="stretch", height=min(len(sgrid) + 1, 10) * 35 + 3,
+                disabled=["Sold in", "Stock", "Sector", "Qty", "Sell price", "Sale value"],
+                key=f"sales_list_{state.version('portfolio_version')}",
+                column_config={
+                    "Remove": st.column_config.CheckboxColumn(help="Tick sales to remove"),
+                    "Sold in": st.column_config.DateColumn("Sold in", format="MMM YY"),
+                    "Qty": st.column_config.NumberColumn(format="%.0f"),
+                    "Sell price": st.column_config.NumberColumn(format="%.2f"),
+                    "Sale value": st.column_config.NumberColumn("Sale value (₹)", format="%.0f"),
+                },
+            )
+            if st.button("Remove selected sales", key="sales_remove"):
+                rm = sedited["Remove"].fillna(False).astype(bool).to_numpy()
+                if not rm.any():
+                    st.info("Tick at least one sale first.")
+                else:
+                    removed_stocks = sorted(set(entries.loc[s_order[rm], "stock"].astype(str)))
+                    remaining_entries = entries.drop(index=s_order[rm]).reset_index(drop=True)
+                    save_portfolio(remaining_entries if not remaining_entries.empty else None,
+                                   state.get_meta().get("portfolio_source", ""))
+                    st.session_state["investbook_flash"] = [
+                        f"Removed {int(rm.sum())} sale(s): {', '.join(removed_stocks)}. "
+                        "The sold quantity is back in holdings and the Dashboard has updated."]
+                    st.rerun()
 else:
     known_sectors = sorted(set(COMMON_SECTORS) | (set(entries["sector"].dropna()) if entries is not None else set()))
     with st.form("add_entry", clear_on_submit=True, border=True):

@@ -216,6 +216,43 @@ def test_manual_form_dates_follow_opening_side():
     assert any("opens with a buy" in e.value for e in at.error)
 
 
+def test_remove_recorded_sale_restores_holdings():
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio, sale_from_form, match_sales
+
+    raw = pd.DataFrame({
+        "Month": ["Jul-23"], "Sector": ["CHEMICALS"], "Stock": ["SRF"],
+        "QTY": [50], "Buy": [2179.17], "Cost": [50 * 2179.17],
+    })
+    entries = clean_portfolio(raw).entries
+    sale = sale_from_form(dt.date(2025, 3, 1), "CHEMICALS", "SRF", 20, 2890.0, 35.0)
+    entries = pd.concat([entries, sale.entries], ignore_index=True)
+    store.save_frame("owner", "portfolio", entries)
+
+    at = app("screens/portfolio_input.py")
+    at.radio[0].set_value("Record a sale").run()
+    assert not at.exception, [e.value for e in at.exception]
+    sales_editor = next(e for e in at.get("data_editor") if "Sell price" in e.value.columns)
+    disp = sales_editor.value.reset_index(drop=True)
+    assert len(disp) == 1 and disp.loc[0, "Stock"] == "SRF" and float(disp.loc[0, "Sell price"]) == 2890.0
+    # pressing the button with nothing ticked is refused
+    by_label(at.button, "Remove selected sales").click().run()
+    assert any("Tick at least one sale" in i.value for i in at.info)
+    # tick the sale and remove it
+    at.session_state[sales_editor.key] = {"edited_rows": {"0": {"Remove": True}}, "added_rows": [], "deleted_rows": []}
+    by_label(at.button, "Remove selected sales").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Removed 1 sale(s): SRF" in s_.value for s_ in at.success)   # flash survives the rerun
+
+    left = store.load_frame("owner", "portfolio")
+    assert "side" not in left.columns or not (left["side"] == "sell").any()
+    remaining, sales = match_sales(left)
+    assert float(remaining["qty"].sum()) == 50.0                            # full holding restored
+    assert sales.empty
+
+
 def test_tradebook_focus_filters_trades_saved():
     import pandas as pd
     from core import store
