@@ -5,7 +5,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from core import state
+from core import state, store
 from core.formatting import inr
 from core.parse import apply_grid_edits, cell_changed
 from core.sips import SIP_SOURCE, empty_sips, next_due, normalise_sips, run_autopost
@@ -214,6 +214,16 @@ elif mode == "Record a sale":
                     st.rerun()
 else:
     known_sectors = sorted(set(COMMON_SECTORS) | (set(entries["sector"].dropna()) if entries is not None else set()))
+    _stock_frame = store.load_frame("_shared", "stocks")
+    _stock_names, _stock_sectors = [], {}
+    if _stock_frame is not None and "stock" in _stock_frame.columns:
+        for _, _sr in _stock_frame.iterrows():
+            _nm = str(_sr.get("stock") or "").strip().upper()
+            if _nm and _nm not in _stock_sectors:
+                _stock_names.append(_nm)
+                _stock_sectors[_nm] = str(_sr.get("sector") or "").strip().upper()
+    AUTO_SECTOR = "Auto (from Stocks Management)"
+    NEW_STOCK = "➕ New stock…"
     with st.form("add_entry", clear_on_submit=True, border=True):
         a, b, c = st.columns(3)
         today = dt.date.today()
@@ -221,9 +231,19 @@ else:
         month_name = m1.selectbox("Purchase month", MONTH_NAMES, index=today.month - 1)
         year = m2.selectbox("Year", list(range(today.year, 1999, -1)), index=0)
         month = dt.date(year, MONTH_NAMES.index(month_name) + 1, 1)
-        sector = b.selectbox("Sector", known_sectors + ["Other"], index=known_sectors.index("OTHER") if "OTHER" in known_sectors else 0)
+        sector_options = ([AUTO_SECTOR] if _stock_names else []) + known_sectors + ["Other"]
+        sector = b.selectbox("Sector", sector_options,
+                             index=0 if _stock_names else (known_sectors.index("OTHER") if "OTHER" in known_sectors else 0),
+                             help="Auto takes the sector saved for the picked stock in Stocks Management.")
         other_sector = b.text_input("If Other, type the sector", placeholder="e.g. DEFENCE")
-        stock = c.text_input("Stock", placeholder="e.g. DMART").strip().upper()
+        if _stock_names:
+            stock_pick = c.selectbox("Stock", sorted(_stock_names) + [NEW_STOCK],
+                                     help="From Stocks Management; pick ➕ to type a new one.")
+            stock_typed = c.text_input("If ➕ New stock…, type it", placeholder="e.g. DMART").strip().upper()
+            stock = stock_typed if (stock_pick == NEW_STOCK or stock_typed) else stock_pick
+        else:
+            stock = c.text_input("Stock", placeholder="e.g. DMART",
+                                 help="Tip: fill Stocks Management (menu) to get a dropdown here.").strip().upper()
         a, b, c = st.columns(3)
         qty = a.number_input("Qty", min_value=0, step=1, value=0)
         buy = b.number_input("Buy price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
@@ -242,6 +262,11 @@ else:
         chosen_sector = other_sector.strip().upper() if sector == "Other" and other_sector.strip() else sector
         if chosen_sector == "Other":
             problems.append("Type the sector name next to 'Other'.")
+        if chosen_sector == AUTO_SECTOR:
+            chosen_sector = _stock_sectors.get(stock, "")
+            if not chosen_sector:
+                problems.append(f"Stocks Management has no sector for {stock or 'this stock'} — "
+                                "pick a sector in the form (or fill it in Stocks Management first).")
         if problems:
             for p in problems:
                 st.error(p)
@@ -253,6 +278,12 @@ else:
                 save_portfolio(combined, "manual entry")
                 entries = combined
                 st.success(f"Added {stock}: {qty} × {buy:,.2f} = {inr(qty * buy, prefix='₹')}")
+                if stock and stock not in _stock_sectors:
+                    addition = pd.DataFrame([{"stock": stock, "sector": chosen_sector, "marketcap": "", "note": ""}])
+                    full = pd.concat([_stock_frame, addition], ignore_index=True) if _stock_frame is not None else addition
+                    store.save_frame("_shared", "stocks", full)
+                    state.bump("stocks_version")
+                    st.caption(f"“{stock}” was added to the stock list (menu → Stocks Management).")
 
 # ------------------------------------------------------------- SIP plans ----
 sips = normalise_sips(state.get_frame("sips"))
@@ -436,12 +467,22 @@ if entries is not None and not entries.empty:
                 st.caption("A sale is kept as its own SELL row next to the original BUY rows — that is the audit trail, "
                            "not a duplicate. Switch to **Remaining holdings** to see what is left after sales.")
             st.caption("Cells are editable; press **Save changes** when done. For edited rows, Value is recalculated "
-                       "as Qty × Price and the month is snapped to its first day.")
+                       "as Qty × Price and the month is snapped to its first day. "
+                       "**Sale date / Sale price**: on a SELL row they are the sale's own month and price (edit to correct); "
+                       "on a BUY row, fill both and press Save changes to **book a sale of that whole lot** "
+                       "(a SELL row is added — partial sales go through Record a sale).")
             order = entries.sort_values("month", ascending=False, na_position="last").index
             editable_cols = [c for c in ("month", "sector", "stock", "side", "qty", "buy", "charges", "gift") if c in entries.columns]
             grid = entries.loc[order, editable_cols].copy()
             if "side" in grid:
                 grid["side"] = grid["side"].astype("string").str.upper()
+            sell_mask_order = (entries.loc[order, "side"].astype(str).str.lower() == "sell"
+                               if "side" in entries.columns else pd.Series(False, index=order))
+            grid["sale_date"] = pd.to_datetime(entries.loc[order, "month"], errors="coerce").where(sell_mask_order)
+            grid["sale_price"] = pd.to_numeric(entries.loc[order, "buy"], errors="coerce").where(sell_mask_order)
+            show_cols = [c for c in ("month", "sector", "stock", "side", "qty", "buy", "sale_date", "sale_price",
+                                     "charges", "gift") if c in grid.columns]
+            grid = grid[show_cols]
             grid.insert(0, "Remove", False)
             sector_options = sorted(set(COMMON_SECTORS) | set(entries["sector"].dropna().astype(str))) if "sector" in entries.columns else COMMON_SECTORS
             edited = st.data_editor(
@@ -456,6 +497,12 @@ if entries is not None and not entries.empty:
                                                              help="SELL rows are matched FIFO against earlier BUY rows of the same stock."),
                     "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
                     "buy": st.column_config.NumberColumn("Price", format="%.2f"),
+                    "sale_date": st.column_config.DateColumn("Sale date", format="MMM YY",
+                                                             help="SELL row: the sale month. BUY row: fill with Sale price "
+                                                                  "to book a sale of this whole lot."),
+                    "sale_price": st.column_config.NumberColumn("Sale price", min_value=0.0, format="%.2f",
+                                                                help="SELL row: the sale price. BUY row: fill with Sale date "
+                                                                     "to book a sale of this whole lot."),
                     "charges": st.column_config.NumberColumn("Charges", format="%.2f"),
                     "gift": st.column_config.NumberColumn("Gift", format="%.0f"),
                 },
@@ -466,7 +513,37 @@ if entries is not None and not entries.empty:
                 if "side" in normalised:
                     normalised["side"] = normalised["side"].astype("string").str.lower()
                 updated, changed = apply_grid_edits(entries, order, normalised, editable_cols)
-                if not changed:
+                changed = list(changed)
+                # ---- the two virtual sale columns -------------------------------
+                sale_requests, sale_errors = [], []
+                for pos, idx in enumerate(order):
+                    is_sell = bool(sell_mask_order.iloc[pos])
+                    e_sd = edited.iloc[pos]["sale_date"]
+                    e_sp = pd.to_numeric(pd.Series([edited.iloc[pos]["sale_price"]]), errors="coerce").iloc[0]
+                    sd_changed = cell_changed(grid.iloc[pos]["sale_date"], edited.iloc[pos]["sale_date"])
+                    sp_changed = cell_changed(grid.iloc[pos]["sale_price"], edited.iloc[pos]["sale_price"])
+                    if not (sd_changed or sp_changed):
+                        continue
+                    stock_name = str(entries.at[idx, "stock"]) if "stock" in entries.columns else "?"
+                    if is_sell:
+                        if sd_changed and pd.notna(e_sd):
+                            updated.at[idx, "month"] = pd.Timestamp(e_sd)
+                            if idx not in changed:
+                                changed.append(idx)
+                        if sp_changed and pd.notna(e_sp):
+                            updated.at[idx, "buy"] = float(e_sp)
+                            if idx not in changed:
+                                changed.append(idx)
+                    else:
+                        if pd.notna(e_sd) and pd.notna(e_sp) and float(e_sp) > 0:
+                            sale_requests.append((idx, pd.Timestamp(e_sd), float(e_sp)))
+                        else:
+                            sale_errors.append(f"{stock_name}: fill **both** Sale date and Sale price to book the sale.")
+                if sale_errors:
+                    for e_ in sale_errors:
+                        st.error(e_)
+                    st.warning("Nothing was saved — fix (or clear) the sale cells above and press Save changes again.")
+                elif not changed and not sale_requests:
                     st.info("No cells were changed.")
                 else:
                     for idx in changed:
@@ -480,8 +557,43 @@ if entries is not None and not entries.empty:
                             updated.at[idx, "sector"] = str(updated.at[idx, "sector"]).upper()
                         if "stock" in updated.columns and pd.notna(updated.at[idx, "stock"]):
                             updated.at[idx, "stock"] = str(updated.at[idx, "stock"]).strip().upper()
+                    booked, problems = [], []
+                    if sale_requests:
+                        held_now, _ = match_sales(updated)
+                        held_by_stock = (held_now.groupby("stock")["qty"].sum().to_dict()
+                                         if not held_now.empty else {})
+                        pieces = []
+                        for idx, sd, sp in sale_requests:
+                            row = updated.loc[idx]
+                            s_stock = str(row.get("stock") or "").strip().upper()
+                            s_qty = pd.to_numeric(pd.Series([row.get("qty")]), errors="coerce").iloc[0]
+                            if pd.isna(s_qty) or s_qty <= 0:
+                                problems.append(f"{s_stock}: the lot has no Qty, so its sale cannot be booked.")
+                                continue
+                            avail = float(held_by_stock.get(s_stock, 0.0))
+                            if float(s_qty) > avail + 1e-9:
+                                problems.append(f"{s_stock}: only {avail:g} held across all lots; this lot's {float(s_qty):g} "
+                                                "is already (partly) sold. Use Record a sale for a partial quantity.")
+                                continue
+                            held_by_stock[s_stock] = avail - float(s_qty)
+                            s_month = dt.date(sd.year, sd.month, 1)
+                            res = sale_from_form(s_month, str(row.get("sector") or ""), s_stock, float(s_qty), sp, 0.0)
+                            show_messages(res)
+                            if res.ok:
+                                pieces.append(res.entries)
+                                booked.append(s_stock)
+                        if problems:
+                            for p_ in problems:
+                                st.error(p_)
+                            st.warning("Nothing was saved — fix the rows above and press Save changes again.")
+                            st.stop()
+                        if pieces:
+                            updated = pd.concat([updated] + pieces, ignore_index=True)
                     save_portfolio(updated, state.get_meta().get("portfolio_source", "manual entry"))
-                    st.success(f"Saved edits to {len(changed)} row(s).")
+                    st.session_state["investbook_flash"] = (
+                        ([f"Saved edits to {len(changed)} row(s)."] if changed else [])
+                        + ([f"Booked {len(booked)} sale(s): {', '.join(booked)} — the SELL row(s) are in this list and "
+                            "profit booked is on the Dashboard."] if booked else []))
                     st.rerun()
             if r1.button("Remove selected", key="portfolio_remove"):
                 remove_mask = edited["Remove"].fillna(False).astype(bool).to_numpy()

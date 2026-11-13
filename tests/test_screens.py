@@ -361,6 +361,81 @@ def test_manual_form_dates_follow_opening_side():
     assert any("opens with a buy" in e.value for e in at.error)
 
 
+def test_investment_entry_dropdown_and_sale_columns():
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio, match_sales
+
+    store.save_frame("_shared", "stocks", pd.DataFrame({
+        "stock": ["DMART", "SRF"], "sector": ["RETAIL", "CHEMICALS"], "marketcap": ["Large cap", "Large cap"],
+        "note": ["", ""]}))
+    raw = pd.DataFrame({
+        "Month": ["Jul-23", "Jan-24"], "Sector": ["CHEMICALS", "RETAIL"], "Stock": ["SRF", "DMART"],
+        "QTY": [50, 20], "Buy": [2179.17, 3800.0],
+    })
+    raw["Cost"] = raw["QTY"] * raw["Buy"]
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    # ---- (1) Add entries manually: Stock is a dropdown fed by Stocks Management, sector Auto
+    at = app("screens/portfolio_input.py")
+    at.get("radio")[0].set_value("Add entries manually").run()
+    stock_sel = by_label(at.selectbox, "Stock")
+    assert "DMART" in stock_sel.options and "➕ New stock…" in stock_sel.options
+    sector_sel = by_label(at.selectbox, "Sector")
+    assert sector_sel.value == "Auto (from Stocks Management)"
+    stock_sel.set_value("DMART")
+    by_label(at.number_input, "Qty").set_value(5)
+    by_label(at.number_input, "Buy price").set_value(4000.0)
+    by_label(at.button, "Add entry").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    saved = store.load_frame("owner", "portfolio")
+    added = saved[(saved["stock"] == "DMART") & (pd.to_numeric(saved["buy"], errors="coerce") == 4000.0)]
+    assert len(added) == 1 and added["sector"].iloc[0] == "RETAIL"      # sector came from Stocks Management
+
+    # ---- (2) All entries grid: Sale date + Sale price columns
+    at2 = app("screens/portfolio_input.py")
+    editor = next(e for e in at2.get("data_editor") if "sale_date" in e.value.columns)
+    disp = editor.value.reset_index(drop=True)
+    assert "sale_price" in disp.columns
+    # fill both on the SRF buy row -> books a sale of the whole lot
+    pos = int(disp.index[disp["stock"] == "SRF"][0])
+    at2.session_state[editor.key] = {"edited_rows": {str(pos): {"sale_date": "2025-03-14", "sale_price": 2890.0}},
+                                     "added_rows": [], "deleted_rows": []}
+    by_label(at2.button, "Save changes").click().run()
+    assert not at2.exception, [e.value for e in at2.exception]
+    saved = store.load_frame("owner", "portfolio")
+    sells = saved[saved["side"] == "sell"]
+    assert len(sells) == 1 and sells["stock"].iloc[0] == "SRF"
+    assert float(sells["qty"].iloc[0]) == 50 and float(sells["buy"].iloc[0]) == 2890.0
+    assert pd.Timestamp(sells["month"].iloc[0]) == pd.Timestamp("2025-03-01")   # snapped to month start
+    remaining, sales = match_sales(saved)
+    assert "SRF" not in set(remaining.loc[pd.to_numeric(remaining["qty"], errors="coerce") > 0, "stock"])
+
+    # correcting the SELL row's sale price via its own Sale price cell
+    at3 = app("screens/portfolio_input.py")
+    editor = next(e for e in at3.get("data_editor") if "sale_date" in e.value.columns)
+    disp = editor.value.reset_index(drop=True)
+    sell_pos = int(disp.index[(disp["stock"] == "SRF") & (disp["side"] == "SELL")][0])
+    assert float(disp.loc[sell_pos, "sale_price"]) == 2890.0            # SELL row shows its own sale info
+    at3.session_state[editor.key] = {"edited_rows": {str(sell_pos): {"sale_price": 2900.0}},
+                                     "added_rows": [], "deleted_rows": []}
+    by_label(at3.button, "Save changes").click().run()
+    saved = store.load_frame("owner", "portfolio")
+    assert float(saved.loc[saved["side"] == "sell", "buy"].iloc[0]) == 2900.0
+
+    # filling only one of the two on a BUY row is refused, nothing saved
+    at4 = app("screens/portfolio_input.py")
+    editor = next(e for e in at4.get("data_editor") if "sale_date" in e.value.columns)
+    disp = editor.value.reset_index(drop=True)
+    buy_pos = int(disp.index[(disp["stock"] == "DMART") & (disp["side"] == "BUY")][0])
+    at4.session_state[editor.key] = {"edited_rows": {str(buy_pos): {"sale_price": 4100.0}},
+                                     "added_rows": [], "deleted_rows": []}
+    by_label(at4.button, "Save changes").click().run()
+    assert any("both" in e.value for e in at4.error)
+    saved2 = store.load_frame("owner", "portfolio")
+    assert len(saved2[saved2["side"] == "sell"]) == 1                   # no extra sale was booked
+
+
 def test_remove_recorded_sale_restores_holdings():
     import datetime as dt
     import pandas as pd
