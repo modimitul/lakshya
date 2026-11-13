@@ -64,6 +64,19 @@ for _flash in st.session_state.pop("investbook_flash", []):
     st.success(_flash)
 entries = state.get_frame("portfolio")
 
+_method_saved = str(state.get_meta().get("sale_match_method", "lifo")).lower()
+_mcol, _ = st.columns([2, 2])
+_method_pick = _mcol.radio("Profit booking method",
+                           ["LIFO — latest buys sold first", "FIFO — earliest buys sold first"],
+                           horizontal=True, index=0 if _method_saved == "lifo" else 1,
+                           help="How a sale's cost basis is matched against your buy lots — everywhere: "
+                                "profit booked on the Dashboard, remaining holdings and open positions. "
+                                "Manage the sales themselves in Entries saved → All entries.")
+sale_method = "lifo" if _method_pick.startswith("LIFO") else "fifo"
+if sale_method != _method_saved:
+    state.put_meta({"sale_match_method": sale_method})
+    st.rerun()
+
 mode = st.radio("How do you want to provide holdings?", ["Upload a file", "Add entries manually", "Record a sale"],
                 horizontal=True, label_visibility="collapsed")
 
@@ -126,13 +139,15 @@ elif mode == "Record a sale":
     if entries is None or entries.empty:
         st.info("Add purchases first; then you can record a sale against them.")
     else:
-        remaining, _ = match_sales(entries)
+        remaining, _ = match_sales(entries, method=sale_method)
         held = remaining.groupby("stock").agg(qty=("qty", "sum"), cost=("cost", "sum"), sector=("sector", "first")) if not remaining.empty else pd.DataFrame()
         held = held[held["qty"] > 0] if not held.empty else held
         if held.empty:
             st.info("Nothing is currently held (everything has been sold).")
         else:
-            st.caption("Sales are matched to purchases FIFO (oldest lots first). Profit booked, ROI and CAGR appear on the Dashboard Reports → Investments tab.")
+            st.caption(f"Sales are matched to purchases {sale_method.upper()} "
+                   f"({'latest' if sale_method == 'lifo' else 'oldest'} lots first — change the method above). "
+                   "Profit booked, ROI and CAGR appear on the Dashboard Reports → Investments tab.")
             with st.form("record_sale", clear_on_submit=True, border=True):
                 a, b, c = st.columns(3)
                 today = dt.date.today()
@@ -164,7 +179,7 @@ elif mode == "Record a sale":
                         combined = pd.concat([entries, result.entries], ignore_index=True)
                         save_portfolio(combined, state.get_meta().get("portfolio_source", "manual entry"))
                         entries = combined
-                        _, sales = match_sales(combined)
+                        _, sales = match_sales(combined, method=sale_method)
                         last = sales.iloc[-1]
                         st.success(f"Recorded sale of {qty:g} {stock}: profit booked {inr(last['profit'], prefix='₹')}"
                                    + (f", ROI {last['roi']:.1f}%, CAGR {last['cagr']:.1f}% over {last['years']:.1f} years" if pd.notna(last["cagr"]) else ""))
@@ -175,7 +190,7 @@ elif mode == "Record a sale":
             st.divider()
             st.markdown(f"**Sales recorded ({len(sells):,})**")
             st.caption("Tick **Remove** on a wrongly recorded sale and press **Remove selected sales** to undo it — "
-                       "the sold quantity goes back into holdings (purchases re-match FIFO automatically) and the "
+                       "the sold quantity goes back into holdings (purchases re-match automatically) and the "
                        "Dashboard's profit booked updates.")
             s_order = sells.sort_values("month", ascending=False).index
             sgrid = pd.DataFrame({
@@ -323,7 +338,7 @@ with st.expander(f"SIP plans — auto-post monthly instalments ({n_active} activ
 
 if entries is not None and not entries.empty:
     # ------------------------------------------------------ open positions ----
-    open_remaining, _ = match_sales(entries)
+    open_remaining, _ = match_sales(entries, method=sale_method)
     open_held = (open_remaining.groupby("stock")
                  .agg(sector=("sector", "first"), qty=("qty", "sum"), cost=("cost", "sum"))
                  .reset_index()) if not open_remaining.empty else pd.DataFrame()
@@ -331,7 +346,7 @@ if entries is not None and not entries.empty:
         open_held = open_held[pd.to_numeric(open_held["qty"], errors="coerce").fillna(0) > 0]
     if not open_held.empty:
         with st.expander(f"Open positions for {owner} ({len(open_held):,} holdings)", expanded=False):
-            st.caption("Everything still held (purchases minus FIFO-matched sales), one row per stock. "
+            st.caption(f"Everything still held (purchases minus {sale_method.upper()}-matched sales), one row per stock. "
                        "To close or trim a position, fill **Sell qty** and **Sell price** (and charges if any) on its row and press "
                        "**Record sales** — a SELL row is added to Entries saved below and the profit booked flows into "
                        "Dashboard Reports → Investments.")
@@ -411,7 +426,7 @@ if entries is not None and not entries.empty:
         view_mode = st.radio("View", ["All entries (editable)", "Remaining holdings (after sales)"],
                              horizontal=True, key="pf_entries_view", label_visibility="collapsed")
         if view_mode.startswith("Remaining"):
-            remaining, _ = match_sales(entries, with_lineage=True)
+            remaining, _ = match_sales(entries, with_lineage=True, method=sale_method)
             if remaining.empty:
                 st.info("Nothing is currently held: every purchase has been sold.")
             else:
@@ -494,7 +509,7 @@ if entries is not None and not entries.empty:
                     "sector": st.column_config.SelectboxColumn("Sector", options=sector_options),
                     "stock": st.column_config.TextColumn("Stock"),
                     "side": st.column_config.SelectboxColumn("Side", options=["BUY", "SELL"],
-                                                             help="SELL rows are matched FIFO against earlier BUY rows of the same stock."),
+                                                             help=f"SELL rows are matched {sale_method.upper()} against BUY rows of the same stock bought on or before the sale month."),
                     "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
                     "buy": st.column_config.NumberColumn("Price", format="%.2f"),
                     "sale_date": st.column_config.DateColumn("Sale date", format="MMM YY",
@@ -559,7 +574,7 @@ if entries is not None and not entries.empty:
                             updated.at[idx, "stock"] = str(updated.at[idx, "stock"]).strip().upper()
                     booked, problems = [], []
                     if sale_requests:
-                        held_now, _ = match_sales(updated)
+                        held_now, _ = match_sales(updated, method=sale_method)
                         held_by_stock = (held_now.groupby("stock")["qty"].sum().to_dict()
                                          if not held_now.empty else {})
                         pieces = []

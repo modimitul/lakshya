@@ -89,7 +89,8 @@ if state.is_admin():
             entries = state.get_frame("portfolio", u["slug"])
             if entries is None or entries.empty:
                 continue
-            remaining, _ = match_sales(entries)
+            _m = str(state.get_meta(u["slug"]).get("sale_match_method", "lifo")).lower()
+            remaining, _ = match_sales(entries, method=_m)
             if remaining.empty:
                 continue
             classified = with_asset_class(remaining, state.get_meta(u["slug"]).get("asset_class_overrides", {}))

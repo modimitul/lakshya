@@ -734,3 +734,31 @@ def test_clean_stock_list():
 
     bad, errors, _ = clean_stock_list(pd.DataFrame({"Foo": [1]}))
     assert bad is None and errors
+
+
+def test_lifo_sale_matching():
+    import datetime as dt
+    import pandas as pd
+    from core.portfolio import clean_portfolio, match_sales, sale_from_form
+
+    raw = pd.DataFrame({
+        "Month": ["Jan-23", "Jan-25"], "Sector": ["IT", "IT"], "Stock": ["TCS", "TCS"],
+        "QTY": [10, 10], "Buy": [3000.0, 4000.0],
+    })
+    raw["Cost"] = raw["QTY"] * raw["Buy"]
+    entries = pd.concat([clean_portfolio(raw).entries,
+                         sale_from_form(dt.date(2025, 6, 1), "IT", "TCS", 10, 4500.0, 0.0).entries],
+                        ignore_index=True)
+    rem_f, sales_f = match_sales(entries, method="fifo")
+    assert float(sales_f["cost"].iloc[0]) == 30000.0 and float(sales_f["profit"].iloc[0]) == 15000.0
+    rem_l, sales_l = match_sales(entries, method="lifo")
+    assert float(sales_l["cost"].iloc[0]) == 40000.0 and float(sales_l["profit"].iloc[0]) == 5000.0
+    # LIFO leaves the OLD lot; FIFO leaves the NEW lot
+    assert pd.Timestamp(rem_l[pd.to_numeric(rem_l["qty"], errors="coerce") > 0]["month"].iloc[0]).year == 2023
+    assert pd.Timestamp(rem_f[pd.to_numeric(rem_f["qty"], errors="coerce") > 0]["month"].iloc[0]).year == 2025
+    # LIFO never consumes a lot bought AFTER the sale month
+    entries2 = pd.concat([clean_portfolio(raw).entries,
+                          sale_from_form(dt.date(2024, 6, 1), "IT", "TCS", 10, 4500.0, 0.0).entries],
+                         ignore_index=True)
+    _, sales2 = match_sales(entries2, method="lifo")
+    assert float(sales2["cost"].iloc[0]) == 30000.0      # only the Jan-23 lot existed by Jun-24

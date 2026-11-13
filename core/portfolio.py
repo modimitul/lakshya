@@ -98,7 +98,8 @@ def clean_portfolio(raw: pd.DataFrame) -> PortfolioResult:
         df["side"] = pd.Series(["buy"] * len(df), index=df.index, dtype="string")
     n_sells = int((df["side"] == "sell").sum())
     if n_sells:
-        result.notes.append(f"{n_sells} rows are sales (SIDE = SELL): matched FIFO against purchases on the dashboard.")
+        result.notes.append(f"{n_sells} rows are sales (SIDE = SELL): matched against purchases on the dashboard "
+                            "(FIFO or LIFO, as set in the Investment Book).")
     df = df.drop(columns=["pct_investment"], errors="ignore")
 
     if df.empty and not result.errors:
@@ -137,10 +138,15 @@ def _years_between(a: pd.Timestamp, b: pd.Timestamp) -> float:
     return max(months, 1) / 12.0
 
 
-def match_sales(entries: pd.DataFrame, with_lineage: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """FIFO-match sell rows against buy rows of the same stock.
+SALE_METHODS = {"fifo": "FIFO — earliest buys sold first", "lifo": "LIFO — latest buys sold first"}
 
-    Returns (remaining, sales):
+
+def match_sales(entries: pd.DataFrame, with_lineage: bool = False,
+                method: str = "fifo") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Match sell rows against buy rows of the same stock, FIFO or LIFO.
+
+    method="fifo" consumes the earliest buy lots first; method="lifo" the most
+    recent lots bought on or before the sale month. Returns (remaining, sales):
       remaining: buy rows with qty/cost reduced to what is still held (fully sold lots dropped)
       sales: one row per sale with cost basis, profit, ROI %, cost-weighted holding years and CAGR %
     With with_lineage=True, remaining also carries src_index (the row's index label in `entries`),
@@ -173,6 +179,8 @@ def match_sales(entries: pd.DataFrame, with_lineage: bool = False) -> tuple[pd.D
         lots = buys[buys["_matchable"] & (buys["stock"] == sale["stock"]) & (buys["qty_left"] > 0)]
         if pd.notna(sale["month"]):
             lots = lots[(lots["month"].isna()) | (lots["month"] <= sale["month"])]
+        if str(method).lower() == "lifo":
+            lots = lots.sort_values("month", ascending=False, na_position="last", kind="stable")
         for idx, lot in lots.iterrows():
             if qty_to_match <= 0:
                 break
@@ -229,7 +237,7 @@ def sales_summary(sales: pd.DataFrame) -> dict:
 
 
 def yearly_sales_summary(sales: pd.DataFrame) -> pd.DataFrame:
-    """Per calendar year of sale: count, sale value, FIFO cost, profit booked, ROI % and CAGR %.
+    """Per calendar year of sale: count, sale value, matched cost, profit booked, ROI % and CAGR %.
 
     ROI = profit ÷ cost of the lots sold that year; CAGR = (sale value ÷ cost)^(1 ÷ cost-weighted
     years held) − 1, aggregated over that year's sales. Sales without a usable month are left out.

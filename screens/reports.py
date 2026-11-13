@@ -375,7 +375,9 @@ with invest_tab:
     else:
         overrides = state.get_meta().get("asset_class_overrides", {})
         classified_all = with_asset_class(entries, overrides)
-        remaining_all, sales_all = match_sales(classified_all)
+        inv_method = str(state.get_meta().get("sale_match_method", "lifo")).lower()
+        inv_method_label = inv_method.upper()
+        remaining_all, sales_all = match_sales(classified_all, method=inv_method)
         classified = remaining_all            # holdings views use what is still held
 
         years = sorted(int(y) for y in classified_all["month"].dt.year.dropna().unique())
@@ -468,8 +470,11 @@ with invest_tab:
             inv_sheets["Holdings (remaining)"] = view.assign(Month=view["month"].dt.strftime("%b-%y"))
         inv_sheets["All entries"] = classified_all.assign(Month=classified_all["month"].dt.strftime("%b-%y"))
 
-        # ---- profit booked on sales (FIFO-matched); shown even when nothing is held any more
+        # ---- profit booked on sales (FIFO/LIFO per the Investment Book setting)
         st.subheader("Profit booked on sales")
+        st.caption(f"Cost basis matched **{inv_method_label}** "
+                   f"({'latest' if inv_method == 'lifo' else 'earliest'} buy lots consumed first) — "
+                   "set the method and manage the SELL rows in Investment Book → Entries saved → All entries.")
         if sales_view is None or sales_view.empty:
             st.caption("No sales recorded yet. Use Investment Book → Record a sale (or SIDE = SELL rows in an upload).")
         else:
@@ -488,13 +493,13 @@ with invest_tab:
                 st.markdown("**By year**")
                 yshow = pd.DataFrame({
                     "Year": ysum["Year"].astype(str), "Sales": ysum["Sales"],
-                    "Sale value": ysum["Sale value"].map(inr), "Cost (FIFO)": ysum["Cost"].map(inr),
+                    "Sale value": ysum["Sale value"].map(inr), f"Cost ({inv_method_label})": ysum["Cost"].map(inr),
                     "Profit booked": ysum["Profit"].map(inr),
                     "ROI %": ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
                     "CAGR %": ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
                 })
                 ytotal = pd.DataFrame([{"Year": "Total", "Sales": int(ysum["Sales"].sum()),
-                                        "Sale value": inr(ysum["Sale value"].sum()), "Cost (FIFO)": inr(ss["cost"]),
+                                        "Sale value": inr(ysum["Sale value"].sum()), f"Cost ({inv_method_label})": inr(ss["cost"]),
                                         "Profit booked": inr(ss["profit"]),
                                         "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—",
                                         "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
@@ -528,12 +533,12 @@ with invest_tab:
             sale_table = pd.DataFrame({
                 "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
                 "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
-                "Cost (FIFO)": srt["cost"].map(inr), "Profit": srt["profit"].map(inr), "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
+                f"Cost ({inv_method_label})": srt["cost"].map(inr), "Profit": srt["profit"].map(inr), "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
                 "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
                 "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
             })
             total_row = pd.DataFrame([{"Sold": "Total", "Stock": "", "Qty": "", "Sell price": "", "Sale value": inr(srt["sale_value"].sum()),
-                                       "Cost (FIFO)": inr(ss["cost"]), "Profit": inr(ss["profit"]),
+                                       f"Cost ({inv_method_label})": inr(ss["cost"]), "Profit": inr(ss["profit"]),
                                        "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—", "First bought": "", "Years held": "",
                                        "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
             sale_table = pd.concat([sale_table, total_row], ignore_index=True)

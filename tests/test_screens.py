@@ -69,7 +69,7 @@ def test_trading_manual_form_adds_a_trade():
 
 def test_portfolio_manual_form_adds_an_entry():
     at = app("screens/portfolio_input.py")
-    at.radio[0].set_value("Add entries manually").run()
+    by_label(at.get("radio"), "How do you want to provide holdings?").set_value("Add entries manually").run()
     assert not at.exception, [e.value for e in at.exception]
     by_label(at.selectbox, "Purchase month").set_value("Jul")
     by_label(at.selectbox, "Year").set_value(2023)
@@ -378,7 +378,7 @@ def test_investment_entry_dropdown_and_sale_columns():
 
     # ---- (1) Add entries manually: Stock is a dropdown fed by Stocks Management, sector Auto
     at = app("screens/portfolio_input.py")
-    at.get("radio")[0].set_value("Add entries manually").run()
+    by_label(at.get("radio"), "How do you want to provide holdings?").set_value("Add entries manually").run()
     stock_sel = by_label(at.selectbox, "Stock")
     assert "DMART" in stock_sel.options and "➕ New stock…" in stock_sel.options
     sector_sel = by_label(at.selectbox, "Sector")
@@ -436,6 +436,44 @@ def test_investment_entry_dropdown_and_sale_columns():
     assert len(saved2[saved2["side"] == "sell"]) == 1                   # no extra sale was booked
 
 
+def test_profit_method_setting_flows_to_dashboard():
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio, sale_from_form
+
+    raw = pd.DataFrame({
+        "Month": ["Jan-23", "Jan-25"], "Sector": ["IT", "IT"], "Stock": ["TCS", "TCS"],
+        "QTY": [10, 10], "Buy": [3000.0, 4000.0],
+    })
+    raw["Cost"] = raw["QTY"] * raw["Buy"]
+    entries = pd.concat([clean_portfolio(raw).entries,
+                         sale_from_form(dt.date(2025, 6, 1), "IT", "TCS", 10, 4500.0, 0.0).entries],
+                        ignore_index=True)
+    store.save_frame("owner", "portfolio", entries)
+
+    # default is LIFO: the dashboard's profit booked uses the Jan-25 lot's cost
+    at = app("screens/reports.py")
+    assert not at.exception, [e.value for e in at.exception]
+    body_frames = [f.value for f in at.get("dataframe")]
+    def find_cost(frames, label):
+        for fr in frames:
+            if label in fr.columns:
+                return fr
+        return None
+    per_sale = find_cost(body_frames, "Cost (LIFO)")
+    assert per_sale is not None, "LIFO cost column should be on the dashboard by default"
+
+    # switch to FIFO in the Investment Book and the dashboard follows
+    at2 = app("screens/portfolio_input.py")
+    by_label(at2.get("radio"), "Profit booking method").set_value("FIFO — earliest buys sold first").run()
+    assert not at2.exception, [e.value for e in at2.exception]
+    assert (store.load_json("owner", "meta", {}) or {}).get("sale_match_method") == "fifo"
+    at3 = app("screens/reports.py")
+    frames3 = [f.value for f in at3.get("dataframe")]
+    assert find_cost(frames3, "Cost (FIFO)") is not None
+
+
 def test_remove_recorded_sale_restores_holdings():
     import datetime as dt
     import pandas as pd
@@ -452,7 +490,7 @@ def test_remove_recorded_sale_restores_holdings():
     store.save_frame("owner", "portfolio", entries)
 
     at = app("screens/portfolio_input.py")
-    at.radio[0].set_value("Record a sale").run()
+    by_label(at.get("radio"), "How do you want to provide holdings?").set_value("Record a sale").run()
     assert not at.exception, [e.value for e in at.exception]
     sales_editor = next(e for e in at.get("data_editor") if "Sell price" in e.value.columns)
     disp = sales_editor.value.reset_index(drop=True)
