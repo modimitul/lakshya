@@ -5,6 +5,7 @@ import streamlit as st
 
 from core import APP_NAME, APP_TAGLINE, state, store
 from core.benchmarks import period_label
+from core.filters import excel_table
 from core.formatting import inr, pct
 from core.metrics import cagr_from_monthly, kpis, monthly_summary, months_in, settled_only, yearly_summary
 from core.portfolio import asset_class_summary, match_sales, with_asset_class
@@ -81,7 +82,7 @@ if state.is_admin():
                 "Best month": f"{k['best_month'][0]} ({inr(k['best_month'][1], prefix='₹')})",
                 "Worst month": f"{k['worst_month'][0]} ({inr(k['worst_month'][1], prefix='₹')})",
             })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        excel_table(pd.DataFrame(rows), key="tbl_family_trading")
 
         st.markdown("**Investments — asset class allocation** (current holdings)")
         per_member, class_order, member_frames = {}, [], {}
@@ -115,7 +116,7 @@ if state.is_admin():
                     continue
                 shown[col] = shown[col].map(lambda v: (pct(v, 1) + "%") if col == "% of family" and pd.notna(v)
                                             else (inr(v) if pd.notna(v) else "—"))
-            st.dataframe(shown, hide_index=True, width="stretch")
+            excel_table(shown, key="tbl_family_classes")
 
             # ---- holdings by stock, highest family investment first ----
             st.markdown("**Investments — holdings by stock** (highest family investment on top)")
@@ -143,8 +144,7 @@ if state.is_admin():
                 shown_stocks[col] = shown_stocks[col].map(
                     lambda v, c=col: (pct(v, 1) + "%") if c == "% of family" and pd.notna(v)
                     else (inr(v) if pd.notna(v) else "—"))
-            st.dataframe(shown_stocks, hide_index=True, width="stretch",
-                         height=min(len(shown_stocks) + 1, 18) * 35 + 3)
+            excel_table(shown_stocks, key="tbl_family_bystock")
 
             # ---- Equity only: how much sits in Large / Mid / Small cap ----
             st.markdown("**Equity by marketcap** (Equity asset class only; caps come from Stocks Management)")

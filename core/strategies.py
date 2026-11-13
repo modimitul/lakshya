@@ -41,6 +41,8 @@ STRATEGIES: list[tuple[str, str, str]] = [
     ("FUTURE Short", "SELL FUTURE", "🐻 Bear"),
     ("Debt", "", ""),
     ("Equity", "", ""),
+    ("Equity Intraday", "Cash-market equity bought and sold the same day.", ""),
+    ("Equity Delivery", "Cash-market equity taken into the demat account and sold later.", ""),
     ("Long Unwinding", "Longs selling their accumulated positions: holders who expected a rise now sell.", "🐻 Bear"),
     ("Short Build Up", "Price falls + open interest rises = fresh shorts being added.", "🐻 Bear"),
     ("Short Covering", "Shorts buying back to close positions (buying to cover).", "🐂 Bull"),
@@ -50,7 +52,7 @@ STRATEGIES: list[tuple[str, str, str]] = [
 
 # Types where a strike price does not apply (everything else is an option strategy).
 NON_OPTION_TYPES = {
-    "FUTURE Long", "FUTURE Short", "Debt", "Equity",
+    "FUTURE Long", "FUTURE Short", "Debt", "Equity", "Equity Intraday", "Equity Delivery",
     "Long Unwinding", "Short Build Up", "Short Covering", "Long Build Up",
     CHARGE_TYPE, OTHER_TYPE,
 }

@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 
 from core import state, store
-from core.filters import filter_table
 from core.formatting import inr
 from core.parse import apply_grid_edits, cell_changed
 from core.sips import SIP_SOURCE, empty_sips, next_due, normalise_sips, run_autopost
@@ -437,8 +436,7 @@ if entries is not None and not entries.empty:
                 rem_all = remaining.sort_values("month", ascending=False, na_position="last")
                 _rq = pd.to_numeric(rem_all["qty"], errors="coerce")
                 rem_all = rem_all.assign(buy_price=pd.to_numeric(rem_all["cost"], errors="coerce") / _rq.where(_rq > 0))
-                rem_f = filter_table(rem_all, key="remaining_filter", label="Filter holdings",
-                                     columns=["month", "sector", "stock", "qty", "buy_price", "cost"])
+                rem_f = rem_all
                 rem = rem_f.reset_index(drop=True)
                 rgrid = pd.DataFrame({
                     "month": rem["month"], "sector": rem["sector"], "stock": rem["stock"],
@@ -534,7 +532,6 @@ if entries is not None and not entries.empty:
             base["sale_price"] = [x[1] for x in info]
             base["sold"] = [x[2] for x in info]
 
-            base = filter_table(base, key="portfolio_entries_filter", label="Filter entries")
             order = base.index
             grid = base.copy()
             grid.insert(0, "Remove", False)

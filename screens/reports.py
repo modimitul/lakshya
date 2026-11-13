@@ -6,7 +6,7 @@ import streamlit as st
 
 from core import state
 from core.benchmarks import Z_COLUMN, cagr_table, comparison_table, get_monthly, period_label
-from core.filters import filter_table
+from core.filters import excel_table
 from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, cagr_from_monthly, capital_table, kpis, monthly_summary,
                           to_excel_bytes, yearly_summary, yearly_with_total)
@@ -172,7 +172,7 @@ with trading_tab:
                 "Year": yt["Year"], "Investments": yt["Investments"].map(inr), "Net Profit": yt["Net Profit"].map(inr),
                 "Yearly ROI": yt["Yearly ROI"].map(lambda v: pct(v, 0)), "Brokerage": yt["Brokerage"].map(inr), "Trades": yt["Trades"],
             })
-            st.dataframe(shown_y, hide_index=True, width="stretch", height=(len(shown_y) + 1) * 35 + 3)
+            excel_table(shown_y, key="tbl_yearly")
             st.caption(("Financial years run April to March. " if basis == "financial" else "")
                        + "Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
                        "Grand Total averages Investments and ROI across years and sums the rest.")
@@ -205,7 +205,7 @@ with trading_tab:
                 display = cmp.copy()
                 for col in display.columns[1:]:
                     display[col] = display[col].map(lambda v: pct(v) if pd.notna(v) else "")
-                st.dataframe(display, hide_index=True, width="stretch", height=(len(display) + 1) * 35 + 3)
+                excel_table(display, key="tbl_benchmarks")
                 overall_bar(cmp, "Period", "Grand Total", "Grand Total return, all listed periods (%)", "cmp_total_bar")
 
                 st.markdown("**CAGR (compounded, annualised)**")
@@ -214,7 +214,7 @@ with trading_tab:
                 for col in display_cg.columns:
                     if col not in ("Period", "Months"):
                         display_cg[col] = display_cg[col].map(lambda v: pct(v) if pd.notna(v) else "")
-                st.dataframe(display_cg, hide_index=True, width="stretch", height=(len(display_cg) + 1) * 35 + 3)
+                excel_table(display_cg, key="tbl_benchmarks_cagr")
                 overall_bar(cg, "Period", "Overall", "Overall CAGR, all listed months (%)", "cmp_cagr_bar")
                 st.caption(f"{Z_COLUMN} and every benchmark use monthly % returns over the same months you have ROI, grouped by "
                            + ("financial year (Apr–Mar). " if basis == "financial" else "calendar year. ")
@@ -242,9 +242,9 @@ with trading_tab:
                 if roi.empty:
                     fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
                 st.plotly_chart(fig, width="stretch", key="monthly_roi_chart")
-            with st.expander(f"Monthly table ({len(msel)} months)", expanded=False):
+            if st.toggle(f"Show the monthly table ({len(msel)} months)", key="tgl_monthly"):
                 monthly_table = monthly_table_frame(msel, mk)
-                st.dataframe(monthly_table, hide_index=True, width="stretch", height=(len(monthly_table) + 1) * 35 + 3)
+                excel_table(monthly_table, key="tbl_monthly")
                 st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
 
             # --------------------------------------- capital & charges (chart, then tables)
@@ -254,14 +254,16 @@ with trading_tab:
                                    hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
             fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=340)
             st.plotly_chart(fig, width="stretch", key="brokerage_chart")
-            with st.expander(f"Capital and brokerage tables ({len(msel)} months)", expanded=False):
+            if st.toggle(f"Show the capital and brokerage tables ({len(msel)} months)", key="tgl_capbrk"):
                 p1, p2 = st.columns(2)
                 cap_t = capital_table(msel)
                 cap_t["Average of Capital"] = cap_t["Average of Capital"].map(inr)
-                p1.dataframe(cap_t, hide_index=True, width="stretch", height=(len(cap_t) + 1) * 35 + 3)
                 brk_t = brokerage_table(msel)
                 brk_t["Brokerage"] = brk_t["Brokerage"].map(inr)
-                p2.dataframe(brk_t, hide_index=True, width="stretch", height=(len(brk_t) + 1) * 35 + 3)
+                with p1:
+                    excel_table(cap_t, key="tbl_capital")
+                with p2:
+                    excel_table(brk_t, key="tbl_brokerage")
 
             # ------------------------------------------------------ breakdown (chart, then table)
             dimensions = [c for c in ("stock", "type") if c in trades]
@@ -277,18 +279,20 @@ with trading_tab:
                 shown_bd["Win rate"] = shown_bd["Win rate"].map(lambda v: pct(v, 1))
                 if "Avg trade ROI" in shown_bd:
                     shown_bd["Avg trade ROI"] = shown_bd["Avg trade ROI"].map(pct)
-                st.dataframe(shown_bd, hide_index=True, width="stretch", height=min(len(shown_bd) + 1, 13) * 35 + 3)
+                excel_table(shown_bd, key="tbl_breakdown")
 
-            with st.expander("Trade log"):
+            if st.toggle("Show the trade log", key="tgl_tradelog"):
                 log = trades.copy()
                 log["Month"] = log["month"].dt.strftime("%b-%y")
                 lead = [c for c in ("Month", "stock", "type", "strike", "qty", "buy", "buy_date", "sell",
                                     "sale_date", "brokerage", "margin", "lot", "gross_profit", "roi",
                                     "entry_kind", "source_sheet") if c in log.columns or c == "Month"]
                 log = log[[c for c in lead if c in log.columns]]
+                for dcol in ("buy_date", "sale_date"):
+                    if dcol in log.columns:
+                        log[dcol] = pd.to_datetime(log[dcol], errors="coerce").dt.strftime("%d-%b-%y")
                 if "stock" in log.columns:
                     log = log.sort_values(["stock", "Month"], na_position="last")
-                log = filter_table(log, key="tradelog_filter", label="Filter the trade log")
                 total = {c: "" for c in log.columns}
                 total["Month"] = "Total"
                 if "stock" in total:
@@ -296,10 +300,9 @@ with trading_tab:
                 for num_col in ("gross_profit", "brokerage"):
                     if num_col in log.columns:
                         total[num_col] = round(float(pd.to_numeric(log[num_col], errors="coerce").sum()), 2)
-                st.dataframe(pd.concat([log, pd.DataFrame([total])], ignore_index=True),
-                             hide_index=True, width="stretch")
+                excel_table(pd.concat([log, pd.DataFrame([total])], ignore_index=True), key="tbl_tradelog")
             if excluded is not None and not excluded.empty:
-                with st.expander(f"Excluded from monthly totals ({len(excluded)} rows)"):
+                if st.toggle(f"Show the {len(excluded)} rows excluded from monthly totals", key="tgl_excluded"):
                     exc = excluded.copy()
                     exc_total = {c: "" for c in exc.columns}
                     first_col = exc.columns[0]
@@ -307,8 +310,7 @@ with trading_tab:
                     for num_col in ("gross_profit", "brokerage", "pl"):
                         if num_col in exc.columns:
                             exc_total[num_col] = round(float(pd.to_numeric(exc[num_col], errors="coerce").sum()), 2)
-                    st.dataframe(pd.concat([exc, pd.DataFrame([exc_total])], ignore_index=True),
-                                 hide_index=True, width="stretch")
+                    excel_table(pd.concat([exc, pd.DataFrame([exc_total])], ignore_index=True), key="tbl_excluded")
 
             st.subheader("Download")
             sheets = {"Yearly": yearly_with_total(yearly_summary(full_summary, basis)), "Monthly Summary": summary,
@@ -357,7 +359,7 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
         st.plotly_chart(fig, width="stretch", key=f"{key}_top_bar")
 
     h_sorted = h.sort_values("Stock", na_position="last")
-    h_shown = filter_table(h_sorted, key=f"{key}_holdings_filter", label="Filter holdings")
+    h_shown = h_sorted
     shown = h_shown.copy()
     shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
     shown["Buy"] = shown["Buy"].map(lambda v: inr(v) if pd.notna(v) else "—")
@@ -371,20 +373,19 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
                                "% Investment": pct(shown_total / total * 100) if total else "100.00",
                                "Gift": inr(shown_gifts) if shown_gifts else ""}])
     shown = pd.concat([shown, total_row], ignore_index=True)
-    st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 22) * 35 + 3)
+    excel_table(shown, key=f"tbl_{key}_holdings")
 
     sec = alloc.copy()
     sec["Cost"] = sec["Cost"].map(inr)
     sec["% Investment"] = sec["% Investment"].map(pct)
-    with st.expander("Sector table"):
-        st.dataframe(sec, hide_index=True, width="stretch")
-    with st.expander("All entries (as uploaded)"):
+    if st.toggle("Show the sector table", key=f"tgl_{key}_sectors"):
+        excel_table(sec, key=f"tbl_{key}_sectors")
+    if st.toggle("Show all entries (as uploaded)", key=f"tgl_{key}_entries"):
         raw_view = view.copy()
         raw_view["month"] = raw_view["month"].dt.strftime("%b-%y")
         if "stock" in raw_view.columns:
             raw_view = raw_view.sort_values("stock", na_position="last")
-        raw_view = filter_table(raw_view, key=f"{key}_entries_filter", label="Filter entries")
-        st.dataframe(raw_view, hide_index=True, width="stretch")
+        excel_table(raw_view, key=f"tbl_{key}_entries")
     return {f"{heading[:20]} holdings": h, f"{heading[:20]} sectors": alloc}
 
 
@@ -475,7 +476,7 @@ with invest_tab:
                 total_row = pd.DataFrame([{"Asset class": "Grand Total", "Holdings": int(view["stock"].nunique()),
                                            "Cost": inr(total_all), "% Investment": "100.00",
                                            "Gift": inr(view["gift"].sum()) if "gift" in view and view["gift"].sum() else ""}])
-                st.dataframe(pd.concat([shown, total_row], ignore_index=True), hide_index=True, width="stretch",
+                excel_table(pd.concat([shown, total_row], ignore_index=True), key="tbl_class_overview",
                              height=(len(shown) + 2) * 35 + 3)
             with o2:
                 fig = go.Figure(go.Pie(labels=summary["Asset class"], values=summary["Cost"], hole=0.45,
@@ -530,7 +531,7 @@ with invest_tab:
                                         "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—",
                                         "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
                 yshow = pd.concat([yshow, ytotal], ignore_index=True)
-                st.dataframe(yshow, hide_index=True, width="stretch", height=(len(yshow) + 1) * 35 + 3)
+                excel_table(yshow, key="tbl_profit_by_year")
                 fig = go.Figure()
                 fig.add_bar(name="Profit booked (₹)", x=ysum["Year"].astype(str), y=ysum["Profit"],
                             marker_color=[GREEN if v >= 0 else RED for v in ysum["Profit"]],
@@ -563,7 +564,6 @@ with invest_tab:
                 "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
                 "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
             })
-            sale_table = filter_table(sale_table, key="sales_filter", label="Filter sales")
             kept = srt.loc[sale_table.index]
             total_row = pd.DataFrame([{"Sold": "Total", "Stock": f"{len(kept):,} sales", "Qty": "", "Sell price": "",
                                        "Sale value": inr(kept["sale_value"].sum()),
@@ -572,7 +572,7 @@ with invest_tab:
                                        "ROI %": pct(kept["profit"].sum() / kept["cost"].sum() * 100) if kept["cost"].sum() else "—",
                                        "First bought": "", "Years held": "", "CAGR %": ""}])
             sale_table = pd.concat([sale_table, total_row], ignore_index=True)
-            st.dataframe(sale_table, hide_index=True, width="stretch", height=min(len(sale_table) + 1, 15) * 35 + 3)
+            excel_table(sale_table, key="tbl_per_sale")
             fig = go.Figure()
             fig.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
                         marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],

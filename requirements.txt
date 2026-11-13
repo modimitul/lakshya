@@ -7,3 +7,4 @@ xlrd>=2.0.1   # only needed for legacy .xls uploads
 python-calamine>=0.3   # fast Excel reader; openpyxl is the fallback
 sqlalchemy>=2.0
 cryptography
+streamlit-aggrid

@@ -325,7 +325,7 @@ def _to_month_start(series: pd.Series) -> pd.Series:
     return parsed.dt.to_period("M").dt.to_timestamp()
 
 
-def clean(raw: pd.DataFrame) -> ParseResult:
+def clean(raw: pd.DataFrame, sheet_name: str | None = None) -> ParseResult:
     """Map headers, coerce types, derive missing columns, drop blank rows."""
     mapping = map_columns(raw.columns)
     df = raw[list(mapping)].rename(columns=mapping).copy()
@@ -407,8 +407,15 @@ def clean(raw: pd.DataFrame) -> ParseResult:
         charge = label_hit | structural
         df.loc[charge, "entry_kind"] = "charge"
         if "type" not in df:
-            df["type"] = pd.Series(["Equity"] * len(df), index=df.index, dtype="string")
-            result.notes.append("No Type column in this sheet: rows are recorded as Equity trades.")
+            sheet_l = (sheet_name or "").lower()
+            if "intraday" in sheet_l:
+                default_type = "Equity Intraday"
+            elif "delivery" in sheet_l:
+                default_type = "Equity Delivery"
+            else:
+                default_type = "Equity"
+            df["type"] = pd.Series([default_type] * len(df), index=df.index, dtype="string")
+            result.notes.append(f"No Type column in this sheet: rows are recorded as {default_type} trades.")
         df["type"] = df["type"].astype("string").map(lambda v: canonical_type(v) if pd.notna(v) else v)
         df.loc[charge, "type"] = CHARGE_TYPE
         if "strike" in df:
@@ -430,17 +437,25 @@ def clean(raw: pd.DataFrame) -> ParseResult:
             if n_filled:
                 result.notes.append(f"{n_filled} rows had no Month; their Buy Date month was used.")
         if month.isna().any():
-            # A numeric Month (1..12, e.g. Sharekhan's '4.0') is a month number:
-            # combine it with the row's Buy/Sale Date year.
+            # A numeric Month (1..12, e.g. Sharekhan's '4.0') is a month number. Take the
+            # year from the date whose own month matches it — the sale date first (the
+            # sheets count a trade under its sale month), then the buy date; if neither
+            # matches, fall back to the sale/buy date's month outright.
             num_m = coerce_numeric(df["month"])
-            for date_col in ("buy_date", "sale_date"):
-                fixable = month.isna() & num_m.between(1, 12) & (df[date_col].notna() if date_col in df else False)
-                if getattr(fixable, "any", lambda: False)():
+            for date_col in ("sale_date", "buy_date"):
+                if date_col not in df:
+                    continue
+                fixable = (month.isna() & num_m.between(1, 12) & df[date_col].notna()
+                           & (df[date_col].dt.month == num_m))
+                if fixable.any():
                     combined = pd.to_datetime(pd.DataFrame({
                         "year": df.loc[fixable, date_col].dt.year,
                         "month": num_m[fixable].astype(int),
                         "day": 1}), errors="coerce")
                     month = month.where(~fixable, combined.reindex(month.index))
+            for date_col in ("sale_date", "buy_date"):
+                if date_col in df and month.isna().any():
+                    month = month.fillna(_to_month_start(df[date_col]).where(month.isna() & num_m.between(1, 12)))
         if "sale_date" in df and month.isna().any():
             month = month.fillna(_to_month_start(df["sale_date"]).where(month.isna()))
     elif "buy_date" in df:
@@ -613,7 +628,7 @@ def load_trades_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) -> Pa
         if raw is None or raw.empty:
             result.warnings.append(f"{label}: empty or missing.")
             continue
-        part = clean(raw)
+        part = clean(raw, sheet_name=str(sheet))
         if part.errors:
             result.warnings.append(f"{label}: " + " ".join(part.errors))
             continue
@@ -651,7 +666,7 @@ def load_trades_workbook(wb: Workbook, sheets: list[str]) -> ParseResult:
         if raw.empty:
             result.warnings.append(f"{label}: empty.")
             continue
-        part = clean(raw)
+        part = clean(raw, sheet_name=str(sheet))
         del raw
         if part.errors:
             result.warnings.append(f"{label}: " + " ".join(part.errors))

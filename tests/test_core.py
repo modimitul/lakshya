@@ -762,3 +762,46 @@ def test_lifo_sale_matching():
                          ignore_index=True)
     _, sales2 = match_sales(entries2, method="lifo")
     assert float(sales2["cost"].iloc[0]) == 30000.0      # only the Jan-23 lot existed by Jun-24
+
+
+def test_intraday_and_delivery_tabs():
+    import pandas as pd
+    from core.parse import clean, open_positions_mask
+
+    # Delivery tab: buy years differ from the sale year; numeric Month = SALE month
+    delivery = pd.DataFrame({
+        "Buy Date": [pd.Timestamp("2021-09-17"), pd.Timestamp("2022-10-03"), pd.Timestamp("2024-05-02")],
+        "STOCK": ["LALPATHLAB", "SBICARDS", "TITAN"],
+        "QTY": [7, 10, 5],
+        "Buy": [4013.4, 891.68, 3400.0],
+        "Cost": [28093.8, 8916.8, 17000.0],
+        "Sale Date": [pd.Timestamp("2025-08-13"), pd.Timestamp("2025-06-06"), pd.NaT],
+        "Sell": [3292.2, 992.01, None],                      # TITAN still held -> open position
+        "Sale": [23045.4, 9920.1, None],
+        "Profit /Loss": [-5048.4, 1003.3, None],
+        "NetProfit": [-5048.4, 1003.3, None],
+        "Month": [8.0, 6.0, None],
+        "Buy Month": [9.0, 10.0, 5.0],
+    })
+    res = clean(delivery, sheet_name="Sharekhan 2025 - Delivery")
+    assert not res.errors
+    t = res.trades
+    assert set(t["type"]) == {"Equity Delivery"}
+    months = dict(zip(t["stock"], t["month"].dt.strftime("%b-%y")))
+    assert months["LALPATHLAB"] == "Aug-25"                  # sale year + numeric month, not the buy year
+    assert months["SBICARDS"] == "Jun-25"
+    assert months["TITAN"] == "May-24"                       # open row falls back to its buy month
+    mask = open_positions_mask(t)
+    assert dict(zip(t["stock"], mask))["TITAN"] and int(mask.sum()) == 1
+    lal = t[t["stock"] == "LALPATHLAB"].iloc[0]
+    assert abs(float(lal["gross_profit"]) - (-5048.4)) < 0.01
+
+    # Intraday tab name drives the Equity Intraday type
+    intraday = pd.DataFrame({
+        "Buy Date": [pd.Timestamp("2025-04-01")], "Stock": ["LTIM"], "Qty": [5],
+        "Buy": [4425.74], "Cost": [22128.7], "Sell": [4434.35], "Sale": [22171.75],
+        "Profit /Loss": [43.05], "Gross Profit": [43.05], "NetProfit": [43.05], "month": [4.0],
+    })
+    res2 = clean(intraday, sheet_name="Sharekhan 2025- Intraday")
+    assert set(res2.trades["type"]) == {"Equity Intraday"}
+    assert res2.trades["month"].dt.strftime("%b-%y").iloc[0] == "Apr-25"

@@ -310,6 +310,7 @@ def test_open_positions_flow_and_dashboard_exclusion():
     assert any(m.label == "Net profit" for m in at.metric)
     assert any(m.label == "Avg yearly ROI" for m in at.metric)
     # the open NIFTY row is nowhere on the dashboard — not even in the trade log tables
+    at.toggle(key="tgl_tradelog").set_value(True).run()
     found_log_total = False
     for frame in at.get("dataframe"):
         vals = frame.value.to_numpy().ravel().tolist()
@@ -725,6 +726,6 @@ def test_default_owner_is_used_when_nobody_signed_in(tmp_path, monkeypatch):
     headers = [h.value for h in at.subheader]
     expected = ["Yearly performance", "My returns vs benchmarks", "Monthly performance", "Capital and charges", "Breakdown"]
     assert [h for h in headers if h in expected] == expected        # yearly first, monthly after
-    assert any(e.label.startswith("Monthly table") for e in at.expander)        # table collapsed, charts open
-    assert any(e.label.startswith("Capital and brokerage tables") for e in at.expander)
+    assert any(t.label.startswith("Show the monthly table") for t in at.toggle)  # table off by default, charts open
+    assert any(t.label.startswith("Show the capital and brokerage tables") for t in at.toggle)
     assert by_label(at.multiselect, "Benchmarks to compare").value[:3] == ["GOLD BEES", "SILVER BEES", "Nifty ROI"]

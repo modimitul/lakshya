@@ -7,6 +7,8 @@ and returns the filtered frame plus a caption of what is active.
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 
@@ -57,3 +59,40 @@ def filter_table(df: pd.DataFrame | None, key: str, label: str = "Filter",
     st.caption(f"Filter active on {', '.join(f'**{c}**' for c in active)} — "
                f"{len(shown):,} of {len(df):,} rows shown.")
     return shown
+
+
+# ------------------------------------------------- Excel-style header filters --
+def excel_table(df: pd.DataFrame | None, key: str, height: int | None = None) -> None:
+    """Read-only table with Excel-like per-column filters: every column header has a
+    filter dropdown (funnel) plus a quick filter box under it; sorting and resizing work too.
+
+    Falls back to a plain table in headless test runs (LAKSHYA_PLAIN_TABLES=1), where the
+    AgGrid component cannot render.
+    """
+    if df is None or df.empty:
+        st.caption("No rows.")
+        return
+    if os.environ.get("LAKSHYA_PLAIN_TABLES"):
+        st.dataframe(df, hide_index=True, width="stretch",
+                     height=height or min(len(df) + 1, 20) * 35 + 3)
+        return
+    from st_aggrid import AgGrid, GridOptionsBuilder
+
+    frame = df.reset_index(drop=True).copy()
+    for col in frame.columns:
+        if pd.api.types.is_datetime64_any_dtype(frame[col]):
+            frame[col] = frame[col].dt.strftime("%d-%b-%y")
+        elif frame[col].dtype == object:
+            # mixed cells (e.g. a Total row's '' inside a numeric column) break Arrow; send text
+            frame[col] = frame[col].map(lambda v: "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+    gob = GridOptionsBuilder.from_dataframe(frame)
+    gob.configure_default_column(filter=True, sortable=True, resizable=True,
+                                 floatingFilter=True, wrapHeaderText=True, autoHeaderHeight=True)
+    gob.configure_grid_options(suppressMenuHide=True)   # keep the funnel menu icon always visible
+    for col in frame.columns:
+        if pd.api.types.is_numeric_dtype(frame[col]):
+            gob.configure_column(col, filter="agNumberColumnFilter")
+    grid_height = height or min(len(frame) + 3, 20) * 33 + 40
+    AgGrid(frame, gridOptions=gob.build(), height=grid_height, theme="balham",
+           fit_columns_on_grid_load=(len(frame.columns) <= 8),
+           update_mode="NO_UPDATE", allow_unsafe_jscode=False, key=key)
