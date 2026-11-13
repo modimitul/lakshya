@@ -212,7 +212,7 @@ def test_user_management_and_family_home(monkeypatch):
     # Home now shows the family trading KPIs and asset allocation
     at.switch_page("screens/home.py").run()
     assert not at.exception, [e.value for e in at.exception]
-    found_kpis = found_alloc = False
+    found_kpis = found_alloc = found_bystock = False
     for frame in at.get("dataframe"):
         cols = list(frame.value.columns)
         if {"Member", "Net profit", "Avg yearly ROI", "Win rate", "Best month", "Worst month"} <= set(cols):
@@ -222,7 +222,10 @@ def test_user_management_and_family_home(monkeypatch):
         if "Asset class" in cols and "% of family" in cols:
             assert "Priya" in cols
             found_alloc = True
-    assert found_kpis and found_alloc
+        if "Total invested" in cols:
+            vals = frame.value["Total invested"].str.replace(",", "").astype(float, errors="ignore")
+            found_bystock = True
+    assert found_kpis and found_alloc and found_bystock
 
     # deleting Priya removes login and data
     at.switch_page("screens/users_admin.py").run()
@@ -307,9 +310,13 @@ def test_open_positions_flow_and_dashboard_exclusion():
     assert any(m.label == "Net profit" for m in at.metric)
     assert any(m.label == "Avg yearly ROI" for m in at.metric)
     # the open NIFTY row is nowhere on the dashboard — not even in the trade log tables
+    found_log_total = False
     for frame in at.get("dataframe"):
         vals = frame.value.to_numpy().ravel().tolist()
         assert not any("NIFTY" in str(v) for v in vals), "open position leaked into a dashboard table"
+        if "Month" in frame.value.columns and (frame.value["Month"].astype(str) == "Total").any():
+            found_log_total = True
+    assert found_log_total, "trade log should end with a Total row"
 
 
 def test_strategy_guide_page_renders():
@@ -411,23 +418,28 @@ def test_investment_entry_dropdown_and_sale_columns():
     remaining, sales = match_sales(saved)
     assert "SRF" not in set(remaining.loc[pd.to_numeric(remaining["qty"], errors="coerce") > 0, "stock"])
 
-    # correcting the SELL row's sale price via its own Sale price cell
+    # one row per lot: no side column, the SOLD SRF lot shows its sale inline
     at3 = app("screens/portfolio_input.py")
     editor = next(e for e in at3.get("data_editor") if "sale_date" in e.value.columns)
     disp = editor.value.reset_index(drop=True)
-    sell_pos = int(disp.index[(disp["stock"] == "SRF") & (disp["side"] == "SELL")][0])
-    assert float(disp.loc[sell_pos, "sale_price"]) == 2890.0            # SELL row shows its own sale info
-    at3.session_state[editor.key] = {"edited_rows": {str(sell_pos): {"sale_price": 2900.0}},
+    assert "side" not in disp.columns                                   # merged view: one row per transaction
+    assert len(disp[disp["stock"] == "SRF"]) == 1                       # not a buy row + a sell row
+    srf_pos = int(disp.index[disp["stock"] == "SRF"][0])
+    assert float(disp.loc[srf_pos, "sale_price"]) == 2890.0             # the lot carries its sale info
+    assert float(disp.loc[srf_pos, "sold"]) == 50.0
+    # correcting the sale price on the lot's row updates the underlying sell row
+    at3.session_state[editor.key] = {"edited_rows": {str(srf_pos): {"sale_price": 2900.0}},
                                      "added_rows": [], "deleted_rows": []}
     by_label(at3.button, "Save changes").click().run()
+    assert not at3.exception, [e.value for e in at3.exception]
     saved = store.load_frame("owner", "portfolio")
     assert float(saved.loc[saved["side"] == "sell", "buy"].iloc[0]) == 2900.0
 
-    # filling only one of the two on a BUY row is refused, nothing saved
+    # filling only one of the two on an unsold lot is refused, nothing saved
     at4 = app("screens/portfolio_input.py")
     editor = next(e for e in at4.get("data_editor") if "sale_date" in e.value.columns)
     disp = editor.value.reset_index(drop=True)
-    buy_pos = int(disp.index[(disp["stock"] == "DMART") & (disp["side"] == "BUY")][0])
+    buy_pos = int(disp.index[(disp["stock"] == "DMART") & (pd.to_numeric(disp["sold"]) == 0)][0])
     at4.session_state[editor.key] = {"edited_rows": {str(buy_pos): {"sale_price": 4100.0}},
                                      "added_rows": [], "deleted_rows": []}
     by_label(at4.button, "Save changes").click().run()

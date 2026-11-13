@@ -170,12 +170,13 @@ def match_sales(entries: pd.DataFrame, with_lineage: bool = False,
     buys["unit_cost"] = pd.to_numeric(buys["cost"], errors="coerce") / qty_num.where(qty_num > 0)
     buys = buys.sort_values(["month", "stock"], na_position="last")
     sale_rows = []
-    for _, sale in sells.sort_values("month", na_position="last").iterrows():
+    for sell_idx, sale in sells.sort_values("month", na_position="last").iterrows():
         qty_to_match = float(sale["qty"]) if pd.notna(sale["qty"]) else 0.0
         price = float(sale["buy"]) if pd.notna(sale["buy"]) else 0.0
         gross = qty_to_match * price
         charges = float(sale["charges"]) if "charges" in sale and pd.notna(sale["charges"]) else 0.0
         matched_cost, weighted_years, matched_qty, first_buy = 0.0, 0.0, 0.0, None
+        consumed_lots: list[tuple] = []
         lots = buys[buys["_matchable"] & (buys["stock"] == sale["stock"]) & (buys["qty_left"] > 0)]
         if pd.notna(sale["month"]):
             lots = lots[(lots["month"].isna()) | (lots["month"] <= sale["month"])]
@@ -192,6 +193,7 @@ def match_sales(entries: pd.DataFrame, with_lineage: bool = False,
             first_buy = lot["month"] if first_buy is None else min(first_buy, lot["month"]) if pd.notna(lot["month"]) else first_buy
             buys.at[idx, "qty_left"] = lot["qty_left"] - take
             buys.at[idx, "_consumed_cost"] = float(lot["_consumed_cost"]) + take * unit
+            consumed_lots.append((idx, float(take)))
             matched_qty += take
             qty_to_match -= take
         net_value = gross - charges
@@ -207,6 +209,7 @@ def match_sales(entries: pd.DataFrame, with_lineage: bool = False,
             "qty": float(sale["qty"]) if pd.notna(sale["qty"]) else 0.0, "price": price, "charges": charges,
             "sale_value": net_value, "cost": matched_cost, "profit": profit, "roi": roi,
             "first_buy": first_buy, "years": years, "cagr": cagr, "unmatched_qty": qty_to_match,
+            "sell_index": sell_idx, "lots": consumed_lots,
         })
     keep = (~buys["_matchable"]) | (buys["qty_left"] > 0)
     remaining = buys[keep].copy()

@@ -84,7 +84,7 @@ if state.is_admin():
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
         st.markdown("**Investments — asset class allocation** (current holdings)")
-        per_member, class_order = {}, []
+        per_member, class_order, member_frames = {}, [], {}
         for u in family:
             entries = state.get_frame("portfolio", u["slug"])
             if entries is None or entries.empty:
@@ -94,6 +94,7 @@ if state.is_admin():
             if remaining.empty:
                 continue
             classified = with_asset_class(remaining, state.get_meta(u["slug"]).get("asset_class_overrides", {}))
+            member_frames[u["name"]] = classified
             summary = asset_class_summary(classified)
             per_member[u["name"]] = dict(zip(summary["Asset class"], summary["Cost"]))
             for cls in summary["Asset class"]:
@@ -115,6 +116,64 @@ if state.is_admin():
                 shown[col] = shown[col].map(lambda v: (pct(v, 1) + "%") if col == "% of family" and pd.notna(v)
                                             else (inr(v) if pd.notna(v) else "—"))
             st.dataframe(shown, hide_index=True, width="stretch")
+
+            # ---- holdings by stock, highest family investment first ----
+            st.markdown("**Investments — holdings by stock** (highest family investment on top)")
+            stock_cols = {}
+            stock_sector = {}
+            for name, frame in member_frames.items():
+                grp = frame.groupby("stock").agg(cost=("cost", "sum"), sector=("sector", "first"))
+                stock_cols[name] = grp["cost"].to_dict()
+                for stk, sec_ in grp["sector"].items():
+                    stock_sector.setdefault(stk, str(sec_ or ""))
+            all_stocks = sorted(set().union(*[set(d) for d in stock_cols.values()]))
+            by_stock = pd.DataFrame(index=all_stocks)
+            by_stock["Sector"] = [stock_sector.get(stk, "") for stk in all_stocks]
+            for name, costs in stock_cols.items():
+                by_stock[name] = [costs.get(stk) for stk in all_stocks]
+            member_names = list(stock_cols)
+            by_stock["Total invested"] = by_stock[member_names].sum(axis=1, skipna=True)
+            grand_stock = float(by_stock["Total invested"].sum())
+            by_stock["% of family"] = by_stock["Total invested"] / grand_stock * 100 if grand_stock else pd.NA
+            by_stock = by_stock.sort_values("Total invested", ascending=False)
+            shown_stocks = by_stock.reset_index().rename(columns={"index": "Stock"})
+            for col in shown_stocks.columns:
+                if col in ("Stock", "Sector"):
+                    continue
+                shown_stocks[col] = shown_stocks[col].map(
+                    lambda v, c=col: (pct(v, 1) + "%") if c == "% of family" and pd.notna(v)
+                    else (inr(v) if pd.notna(v) else "—"))
+            st.dataframe(shown_stocks, hide_index=True, width="stretch",
+                         height=min(len(shown_stocks) + 1, 18) * 35 + 3)
+
+            # ---- Equity only: how much sits in Large / Mid / Small cap ----
+            st.markdown("**Equity by marketcap** (Equity asset class only; caps come from Stocks Management)")
+            equity = pd.concat([f[f["asset_class"] == "Equity"] for f in member_frames.values()],
+                               ignore_index=True) if member_frames else pd.DataFrame()
+            if equity.empty:
+                st.info("No Equity-class holdings among family members yet.")
+            else:
+                stock_list = store.load_frame("_shared", "stocks")
+                cap_map = {}
+                if stock_list is not None and {"stock", "marketcap"} <= set(stock_list.columns):
+                    cap_map = {str(r["stock"]).strip().upper(): (str(r["marketcap"]).strip() or "Unclassified")
+                               for _, r in stock_list.iterrows()}
+                equity["cap"] = equity["stock"].astype(str).str.strip().str.upper().map(
+                    lambda stk: cap_map.get(stk) or "Unclassified")
+                cap_sum = equity.groupby("cap")["cost"].sum()
+                order = [c for c in ("Large cap", "Mid cap", "Small cap", "Unclassified") if c in cap_sum.index]
+                cap_sum = cap_sum.reindex(order)
+                import plotly.graph_objects as go
+                fig = go.Figure(go.Pie(labels=cap_sum.index, values=cap_sum.values, hole=0.45,
+                                       marker=dict(colors=["#1565C0", "#42A5F5", "#90CAF9", "#B0BEC5"]),
+                                       hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
+                fig.update_layout(title="Family Equity holdings by marketcap",
+                                  margin=dict(l=10, r=10, t=40, b=10), height=380,
+                                  legend=dict(orientation="h", y=-0.1))
+                st.plotly_chart(fig, width="stretch", key="family_cap_pie")
+                if "Unclassified" in cap_sum.index:
+                    st.caption("Unclassified = stocks without a Marketcap in Stocks Management — fill it there "
+                               "and this chart refines itself.")
 
 st.write("")
 l, m, r = st.columns(3)

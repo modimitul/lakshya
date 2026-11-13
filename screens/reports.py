@@ -6,6 +6,7 @@ import streamlit as st
 
 from core import state
 from core.benchmarks import Z_COLUMN, cagr_table, comparison_table, get_monthly, period_label
+from core.filters import filter_table
 from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, cagr_from_monthly, capital_table, kpis, monthly_summary,
                           to_excel_bytes, yearly_summary, yearly_with_total)
@@ -279,19 +280,35 @@ with trading_tab:
                 st.dataframe(shown_bd, hide_index=True, width="stretch", height=min(len(shown_bd) + 1, 13) * 35 + 3)
 
             with st.expander("Trade log"):
-                f1, f2 = st.columns(2)
-                month_pick = f1.multiselect("Months", summary["Month"].tolist())
-                stock_pick = f2.multiselect("Stocks", sorted(trades["stock"].dropna().unique()) if "stock" in trades else [])
                 log = trades.copy()
                 log["Month"] = log["month"].dt.strftime("%b-%y")
-                if month_pick:
-                    log = log[log["Month"].isin(month_pick)]
-                if stock_pick:
-                    log = log[log["stock"].isin(stock_pick)]
-                st.dataframe(log.drop(columns=["month"]), hide_index=True, width="stretch")
+                lead = [c for c in ("Month", "stock", "type", "strike", "qty", "buy", "buy_date", "sell",
+                                    "sale_date", "brokerage", "margin", "lot", "gross_profit", "roi",
+                                    "entry_kind", "source_sheet") if c in log.columns or c == "Month"]
+                log = log[[c for c in lead if c in log.columns]]
+                if "stock" in log.columns:
+                    log = log.sort_values(["stock", "Month"], na_position="last")
+                log = filter_table(log, key="tradelog_filter", label="Filter the trade log")
+                total = {c: "" for c in log.columns}
+                total["Month"] = "Total"
+                if "stock" in total:
+                    total["stock"] = f"{len(log):,} rows"
+                for num_col in ("gross_profit", "brokerage"):
+                    if num_col in log.columns:
+                        total[num_col] = round(float(pd.to_numeric(log[num_col], errors="coerce").sum()), 2)
+                st.dataframe(pd.concat([log, pd.DataFrame([total])], ignore_index=True),
+                             hide_index=True, width="stretch")
             if excluded is not None and not excluded.empty:
                 with st.expander(f"Excluded from monthly totals ({len(excluded)} rows)"):
-                    st.dataframe(excluded, hide_index=True, width="stretch")
+                    exc = excluded.copy()
+                    exc_total = {c: "" for c in exc.columns}
+                    first_col = exc.columns[0]
+                    exc_total[first_col] = "Total"
+                    for num_col in ("gross_profit", "brokerage", "pl"):
+                        if num_col in exc.columns:
+                            exc_total[num_col] = round(float(pd.to_numeric(exc[num_col], errors="coerce").sum()), 2)
+                    st.dataframe(pd.concat([exc, pd.DataFrame([exc_total])], ignore_index=True),
+                                 hide_index=True, width="stretch")
 
             st.subheader("Download")
             sheets = {"Yearly": yearly_with_total(yearly_summary(full_summary, basis)), "Monthly Summary": summary,
@@ -339,14 +356,20 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
         fig.update_layout(title="Top holdings (% of this class)", yaxis_title="%", margin=MARGIN, height=380)
         st.plotly_chart(fig, width="stretch", key=f"{key}_top_bar")
 
-    shown = h.copy()
+    h_sorted = h.sort_values("Stock", na_position="last")
+    h_shown = filter_table(h_sorted, key=f"{key}_holdings_filter", label="Filter holdings")
+    shown = h_shown.copy()
     shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
     shown["Buy"] = shown["Buy"].map(lambda v: inr(v) if pd.notna(v) else "—")
     shown["Cost"] = shown["Cost"].map(inr)
     shown["% Investment"] = shown["% Investment"].map(pct)
     shown["Gift"] = shown["Gift"].map(lambda v: inr(v) if v else "")
+    shown_total = float(pd.to_numeric(h_shown["Cost"], errors="coerce").sum())
+    shown_gifts = float(pd.to_numeric(h_shown["Gift"], errors="coerce").fillna(0).sum()) if "Gift" in h_shown else 0.0
     total_row = pd.DataFrame([{"Stock": "Grand Total", "Sector": "", "Qty": "", "Buy": "",
-                               "Cost": inr(total), "% Investment": "100.00", "Gift": inr(gifts) if gifts else ""}])
+                               "Cost": inr(shown_total),
+                               "% Investment": pct(shown_total / total * 100) if total else "100.00",
+                               "Gift": inr(shown_gifts) if shown_gifts else ""}])
     shown = pd.concat([shown, total_row], ignore_index=True)
     st.dataframe(shown, hide_index=True, width="stretch", height=min(len(shown) + 1, 22) * 35 + 3)
 
@@ -358,6 +381,9 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
     with st.expander("All entries (as uploaded)"):
         raw_view = view.copy()
         raw_view["month"] = raw_view["month"].dt.strftime("%b-%y")
+        if "stock" in raw_view.columns:
+            raw_view = raw_view.sort_values("stock", na_position="last")
+        raw_view = filter_table(raw_view, key=f"{key}_entries_filter", label="Filter entries")
         st.dataframe(raw_view, hide_index=True, width="stretch")
     return {f"{heading[:20]} holdings": h, f"{heading[:20]} sectors": alloc}
 
@@ -529,7 +555,7 @@ with invest_tab:
 
             # -- per sale: table, then chart
             st.markdown("**Per sale**")
-            srt = sales_view.sort_values("month")
+            srt = sales_view.sort_values(["stock", "month"], na_position="last")
             sale_table = pd.DataFrame({
                 "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
                 "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
@@ -537,10 +563,14 @@ with invest_tab:
                 "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
                 "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
             })
-            total_row = pd.DataFrame([{"Sold": "Total", "Stock": "", "Qty": "", "Sell price": "", "Sale value": inr(srt["sale_value"].sum()),
-                                       f"Cost ({inv_method_label})": inr(ss["cost"]), "Profit": inr(ss["profit"]),
-                                       "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—", "First bought": "", "Years held": "",
-                                       "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
+            sale_table = filter_table(sale_table, key="sales_filter", label="Filter sales")
+            kept = srt.loc[sale_table.index]
+            total_row = pd.DataFrame([{"Sold": "Total", "Stock": f"{len(kept):,} sales", "Qty": "", "Sell price": "",
+                                       "Sale value": inr(kept["sale_value"].sum()),
+                                       f"Cost ({inv_method_label})": inr(kept["cost"].sum()),
+                                       "Profit": inr(kept["profit"].sum()),
+                                       "ROI %": pct(kept["profit"].sum() / kept["cost"].sum() * 100) if kept["cost"].sum() else "—",
+                                       "First bought": "", "Years held": "", "CAGR %": ""}])
             sale_table = pd.concat([sale_table, total_row], ignore_index=True)
             st.dataframe(sale_table, hide_index=True, width="stretch", height=min(len(sale_table) + 1, 15) * 35 + 3)
             fig = go.Figure()

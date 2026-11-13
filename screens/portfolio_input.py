@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from core import state, store
+from core.filters import filter_table
 from core.formatting import inr
 from core.parse import apply_grid_edits, cell_changed
 from core.sips import SIP_SOURCE, empty_sips, next_due, normalise_sips, run_autopost
@@ -432,22 +433,30 @@ if entries is not None and not entries.empty:
             else:
                 st.caption("**Qty held** and **Cost held** are editable: corrections are written back to the original "
                            "purchase lot, leaving the sold portion (and past profit booked) untouched. "
-                           "Set Qty held to 0 to drop a wrongly-held lot.")
-                rem = remaining.sort_values("month", ascending=False, na_position="last").reset_index(drop=True)
+                           "Set Qty held to 0 to drop a wrongly-held lot. Buy price is Cost ÷ Qty (read-only).")
+                rem_all = remaining.sort_values("month", ascending=False, na_position="last")
+                _rq = pd.to_numeric(rem_all["qty"], errors="coerce")
+                rem_all = rem_all.assign(buy_price=pd.to_numeric(rem_all["cost"], errors="coerce") / _rq.where(_rq > 0))
+                rem_f = filter_table(rem_all, key="remaining_filter", label="Filter holdings",
+                                     columns=["month", "sector", "stock", "qty", "buy_price", "cost"])
+                rem = rem_f.reset_index(drop=True)
                 rgrid = pd.DataFrame({
                     "month": rem["month"], "sector": rem["sector"], "stock": rem["stock"],
                     "qty": pd.to_numeric(rem["qty"], errors="coerce"),
+                    "buy_price": pd.to_numeric(rem["buy_price"], errors="coerce"),
                     "cost": pd.to_numeric(rem["cost"], errors="coerce"),
                 })
                 redited = st.data_editor(
                     rgrid, hide_index=True, width="stretch", height=min(len(rgrid) + 1, 14) * 35 + 3,
-                    disabled=["month", "sector", "stock"],
-                    key=f"remaining_grid_{state.version('portfolio_version')}",
+                    disabled=["month", "sector", "stock", "buy_price"],
+                    key=f"remaining_grid_{state.version('portfolio_version')}_{abs(hash(tuple(rem_f.index))) % 100000}",
                     column_config={
                         "month": st.column_config.DateColumn("Bought", format="MMM YY"),
                         "sector": st.column_config.TextColumn("Sector"),
                         "stock": st.column_config.TextColumn("Stock"),
                         "qty": st.column_config.NumberColumn("Qty held", min_value=0, format="%.0f"),
+                        "buy_price": st.column_config.NumberColumn("Buy price", format="%.2f",
+                                                                   help="Cost held ÷ Qty held of this lot (read-only)."),
                         "cost": st.column_config.NumberColumn("Cost held (₹)", min_value=0, format="%.0f"),
                     },
                 )
@@ -479,60 +488,86 @@ if entries is not None and not entries.empty:
                         st.rerun()
         else:
             if n_sells:
-                st.caption("A sale is kept as its own SELL row next to the original BUY rows — that is the audit trail, "
-                           "not a duplicate. Switch to **Remaining holdings** to see what is left after sales.")
-            st.caption("Cells are editable; press **Save changes** when done. For edited rows, Value is recalculated "
-                       "as Qty × Price and the month is snapped to its first day. "
-                       "**Sale date / Sale price**: on a SELL row they are the sale's own month and price (edit to correct); "
-                       "on a BUY row, fill both and press Save changes to **book a sale of that whole lot** "
-                       "(a SELL row is added — partial sales go through Record a sale).")
-            order = entries.sort_values("month", ascending=False, na_position="last").index
-            editable_cols = [c for c in ("month", "sector", "stock", "side", "qty", "buy", "charges", "gift") if c in entries.columns]
-            grid = entries.loc[order, editable_cols].copy()
-            if "side" in grid:
-                grid["side"] = grid["side"].astype("string").str.upper()
-            sell_mask_order = (entries.loc[order, "side"].astype(str).str.lower() == "sell"
-                               if "side" in entries.columns else pd.Series(False, index=order))
-            grid["sale_date"] = pd.to_datetime(entries.loc[order, "month"], errors="coerce").where(sell_mask_order)
-            grid["sale_price"] = pd.to_numeric(entries.loc[order, "buy"], errors="coerce").where(sell_mask_order)
-            show_cols = [c for c in ("month", "sector", "stock", "side", "qty", "buy", "sale_date", "sale_price",
-                                     "charges", "gift") if c in grid.columns]
-            grid = grid[show_cols]
+                st.caption("Each row is one **purchase lot**; its sale shows on the same row under Sale date / "
+                           "Sale price (no separate SELL rows here). Remove or bulk-correct the underlying sale "
+                           "rows in **Record a sale → Sales recorded**.")
+            st.caption("Cells are editable; press **Save changes** when done. Value is recalculated as Qty × Price "
+                       "and months snap to their first day. **Sale date / Sale price**: fill both on an unsold lot "
+                       "to book a sale of the whole lot; on a sold lot, edit them to correct that sale "
+                       "(partial sales go through Record a sale).")
+
+            buys_mask_all = (entries["side"].astype(str).str.lower() != "sell"
+                             if "side" in entries.columns else pd.Series(True, index=entries.index))
+            _, lineage_sales = match_sales(entries, with_lineage=True, method=sale_method)
+            lot_sales: dict = {}
+            sale_lot_count: dict = {}
+            if not lineage_sales.empty and "lots" in lineage_sales.columns:
+                for _, sr in lineage_sales.iterrows():
+                    sale_lot_count[sr["sell_index"]] = len(sr["lots"])
+                    for lot_idx, take in sr["lots"]:
+                        lot_sales.setdefault(lot_idx, []).append(
+                            {"sell_index": sr["sell_index"], "qty": float(take),
+                             "month": sr["month"], "price": float(sr["price"])})
+                zero_lot_sales = int((lineage_sales["lots"].map(len) == 0).sum())
+                unmatched = int((pd.to_numeric(lineage_sales["unmatched_qty"], errors="coerce") > 0).sum())
+                if zero_lot_sales or unmatched:
+                    st.warning(f"{zero_lot_sales + unmatched} sale(s) could not be fully matched to purchase lots "
+                               "(sold more than was held by the sale month?). Check Record a sale → Sales recorded.")
+
+            order_all = entries[buys_mask_all].sort_values("month", ascending=False, na_position="last").index
+            editable_cols = [c for c in ("month", "sector", "stock", "qty", "buy", "charges", "gift") if c in entries.columns]
+            base = entries.loc[order_all, editable_cols].copy()
+
+            def _lot_sale_info(lot_idx):
+                hits = lot_sales.get(lot_idx, [])
+                if not hits:
+                    return pd.NaT, float("nan"), 0.0
+                sold = sum(h["qty"] for h in hits)
+                months = [h["month"] for h in hits if pd.notna(h["month"])]
+                month = max(months) if months else pd.NaT
+                price = (hits[0]["price"] if len(hits) == 1
+                         else sum(h["qty"] * h["price"] for h in hits) / sold if sold else float("nan"))
+                return month, price, sold
+
+            info = [_lot_sale_info(i) for i in order_all]
+            base["sale_date"] = pd.to_datetime([x[0] for x in info], errors="coerce")
+            base["sale_price"] = [x[1] for x in info]
+            base["sold"] = [x[2] for x in info]
+
+            base = filter_table(base, key="portfolio_entries_filter", label="Filter entries")
+            order = base.index
+            grid = base.copy()
             grid.insert(0, "Remove", False)
             sector_options = sorted(set(COMMON_SECTORS) | set(entries["sector"].dropna().astype(str))) if "sector" in entries.columns else COMMON_SECTORS
             edited = st.data_editor(
                 grid, hide_index=True, width="stretch", height=min(len(grid) + 1, 14) * 35 + 3,
-                key=f"portfolio_list_{state.version('portfolio_version')}",
+                disabled=["sold"],
+                key=f"portfolio_list_{state.version('portfolio_version')}_{abs(hash(tuple(order))) % 100000}",
                 column_config={
-                    "Remove": st.column_config.CheckboxColumn(help="Tick rows to remove"),
-                    "month": st.column_config.DateColumn("Month", format="MMM YY"),
+                    "Remove": st.column_config.CheckboxColumn(help="Tick rows to remove (removes the purchase lot)"),
+                    "month": st.column_config.DateColumn("Bought", format="MMM YY"),
                     "sector": st.column_config.SelectboxColumn("Sector", options=sector_options),
                     "stock": st.column_config.TextColumn("Stock"),
-                    "side": st.column_config.SelectboxColumn("Side", options=["BUY", "SELL"],
-                                                             help=f"SELL rows are matched {sale_method.upper()} against BUY rows of the same stock bought on or before the sale month."),
                     "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
-                    "buy": st.column_config.NumberColumn("Price", format="%.2f"),
+                    "buy": st.column_config.NumberColumn("Buy price", format="%.2f"),
                     "sale_date": st.column_config.DateColumn("Sale date", format="MMM YY",
-                                                             help="SELL row: the sale month. BUY row: fill with Sale price "
-                                                                  "to book a sale of this whole lot."),
+                                                             help="Unsold lot: fill with Sale price to book a sale of the "
+                                                                  "whole lot. Sold lot: the matched sale's month — edit to correct it."),
                     "sale_price": st.column_config.NumberColumn("Sale price", min_value=0.0, format="%.2f",
-                                                                help="SELL row: the sale price. BUY row: fill with Sale date "
-                                                                     "to book a sale of this whole lot."),
+                                                                help="Unsold lot: fill with Sale date to book the sale. "
+                                                                     "Sold lot: the matched sale's price — edit to correct it."),
+                    "sold": st.column_config.NumberColumn("Sold qty", format="%.0f",
+                                                          help=f"How much of this lot the {sale_method.upper()}-matched sales consumed (read-only)."),
                     "charges": st.column_config.NumberColumn("Charges", format="%.2f"),
                     "gift": st.column_config.NumberColumn("Gift", format="%.0f"),
                 },
             )
             r0, r1, r2 = st.columns([1, 1, 2])
             if r0.button("Save changes", type="primary", key="portfolio_save_edits"):
-                normalised = edited.copy()
-                if "side" in normalised:
-                    normalised["side"] = normalised["side"].astype("string").str.lower()
-                updated, changed = apply_grid_edits(entries, order, normalised, editable_cols)
+                updated, changed = apply_grid_edits(entries, order, edited, editable_cols)
                 changed = list(changed)
-                # ---- the two virtual sale columns -------------------------------
                 sale_requests, sale_errors = [], []
                 for pos, idx in enumerate(order):
-                    is_sell = bool(sell_mask_order.iloc[pos])
                     e_sd = edited.iloc[pos]["sale_date"]
                     e_sp = pd.to_numeric(pd.Series([edited.iloc[pos]["sale_price"]]), errors="coerce").iloc[0]
                     sd_changed = cell_changed(grid.iloc[pos]["sale_date"], edited.iloc[pos]["sale_date"])
@@ -540,20 +575,25 @@ if entries is not None and not entries.empty:
                     if not (sd_changed or sp_changed):
                         continue
                     stock_name = str(entries.at[idx, "stock"]) if "stock" in entries.columns else "?"
-                    if is_sell:
-                        if sd_changed and pd.notna(e_sd):
-                            updated.at[idx, "month"] = pd.Timestamp(e_sd)
-                            if idx not in changed:
-                                changed.append(idx)
-                        if sp_changed and pd.notna(e_sp):
-                            updated.at[idx, "buy"] = float(e_sp)
-                            if idx not in changed:
-                                changed.append(idx)
-                    else:
+                    hits = lot_sales.get(idx, [])
+                    if not hits:
                         if pd.notna(e_sd) and pd.notna(e_sp) and float(e_sp) > 0:
                             sale_requests.append((idx, pd.Timestamp(e_sd), float(e_sp)))
                         else:
                             sale_errors.append(f"{stock_name}: fill **both** Sale date and Sale price to book the sale.")
+                    elif len(hits) == 1 and sale_lot_count.get(hits[0]["sell_index"], 0) == 1:
+                        sell_idx = hits[0]["sell_index"]
+                        if sd_changed and pd.notna(e_sd):
+                            updated.at[sell_idx, "month"] = pd.Timestamp(e_sd)
+                            if sell_idx not in changed:
+                                changed.append(sell_idx)
+                        if sp_changed and pd.notna(e_sp):
+                            updated.at[sell_idx, "buy"] = float(e_sp)
+                            if sell_idx not in changed:
+                                changed.append(sell_idx)
+                    else:
+                        sale_errors.append(f"{stock_name}: this lot's sale spans several rows or lots, so it cannot be "
+                                           "edited here — correct it in Record a sale → Sales recorded.")
                 if sale_errors:
                     for e_ in sale_errors:
                         st.error(e_)
@@ -607,7 +647,7 @@ if entries is not None and not entries.empty:
                     save_portfolio(updated, state.get_meta().get("portfolio_source", "manual entry"))
                     st.session_state["investbook_flash"] = (
                         ([f"Saved edits to {len(changed)} row(s)."] if changed else [])
-                        + ([f"Booked {len(booked)} sale(s): {', '.join(booked)} — the SELL row(s) are in this list and "
+                        + ([f"Booked {len(booked)} sale(s): {', '.join(booked)} — the sale shows on its lot's row and "
                             "profit booked is on the Dashboard."] if booked else []))
                     st.rerun()
             if r1.button("Remove selected", key="portfolio_remove"):
