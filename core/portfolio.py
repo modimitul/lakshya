@@ -48,7 +48,7 @@ class PortfolioResult:
         return not self.errors and not self.entries.empty
 
 
-def clean_portfolio(raw: pd.DataFrame) -> PortfolioResult:
+def clean_portfolio(raw: pd.DataFrame, sector_lookup: dict[str, str] | None = None) -> PortfolioResult:
     mapping = map_columns(raw.columns, PORTFOLIO_ALIASES)
     df = raw[list(mapping)].rename(columns=mapping).copy()
     result = PortfolioResult(entries=df, mapping=mapping)
@@ -86,8 +86,26 @@ def clean_portfolio(raw: pd.DataFrame) -> PortfolioResult:
     else:
         result.warnings.append("No 'MONTH' column; the year and month filters will be unavailable.")
         df["month"] = pd.NaT
-    if "sector" not in df:
-        df["sector"] = pd.Series(["OTHER"] * len(df), dtype="string")
+    had_sector_col = "sector" in df
+    if not had_sector_col:
+        df["sector"] = pd.Series([pd.NA] * len(df), index=df.index, dtype="string")
+    if sector_lookup:
+        lookup = {str(k).strip().upper(): str(v).strip().upper()
+                  for k, v in sector_lookup.items() if str(v or "").strip()}
+        fillable = (df["sector"].isna() | df["sector"].str.upper().eq("OTHER")) & df["stock"].notna()
+        looked_up = df.loc[fillable, "stock"].str.upper().map(lookup)
+        n_filled = int(looked_up.notna().sum())
+        if n_filled:
+            df.loc[fillable, "sector"] = looked_up.astype("string")
+            result.notes.append(f"Sector was filled from Stocks Management for {n_filled:,} rows.")
+    missing_sector = df["sector"].isna() & df["stock"].notna()
+    if missing_sector.any():
+        leftover = sorted(set(df.loc[missing_sector, "stock"].str.upper()))[:8]
+        result.warnings.append(
+            f"{int(missing_sector.sum()):,} rows have no sector and go under OTHER "
+            f"(e.g. {', '.join(leftover)}). Add these stocks' sectors in Stocks Management "
+            "and re-upload, or edit them in Entries saved.")
+    elif not had_sector_col and not sector_lookup:
         result.warnings.append("No 'SECTORS' column; everything is grouped under OTHER.")
     df["sector"] = df["sector"].fillna("OTHER").str.upper()
     df["gift"] = df["gift"].fillna(0) if "gift" in df else 0.0
@@ -108,7 +126,7 @@ def clean_portfolio(raw: pd.DataFrame) -> PortfolioResult:
     return result
 
 
-def load_portfolio(file, filename: str, sheet_name=0) -> PortfolioResult:
+def load_portfolio(file, filename: str, sheet_name=0, sector_lookup: dict[str, str] | None = None) -> PortfolioResult:
     try:
         raw = read_any(file, filename, sheet_name)
     except ValueError as exc:
@@ -117,7 +135,7 @@ def load_portfolio(file, filename: str, sheet_name=0) -> PortfolioResult:
         return PortfolioResult(entries=pd.DataFrame(), errors=[f"Could not read the file: {exc}"])
     if raw.empty:
         return PortfolioResult(entries=pd.DataFrame(), errors=["The selected sheet is empty."])
-    return clean_portfolio(raw)
+    return clean_portfolio(raw, sector_lookup=sector_lookup)
 
 
 def entry_from_form(month, sector: str, stock: str, qty: float, buy: float, gift: float = 0.0) -> PortfolioResult:
@@ -311,12 +329,25 @@ def portfolio_template_bytes() -> bytes:
     return buffer.getvalue()
 
 
+
+def sector_lookup_from_stocks(stocks: pd.DataFrame | None) -> dict[str, str]:
+    """stock -> sector map from the shared Stocks Management list (blank sectors skipped)."""
+    if stocks is None or stocks.empty or "stock" not in stocks or "sector" not in stocks:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in stocks.iterrows():
+        stock = str(row.get("stock") or "").strip().upper()
+        sector = str(row.get("sector") or "").strip()
+        if stock and sector and sector.lower() not in ("nan", "none", "<na>"):
+            out[stock] = sector.upper()
+    return out
+
 def looks_like_portfolio_header(headers: list[str]) -> bool:
     mapped = set(map_columns(headers, PORTFOLIO_ALIASES).values())
     return "stock" in mapped and bool(mapped & {"cost", "buy", "qty"})
 
 
-def load_portfolio_workbook(wb, sheets: list[str]) -> PortfolioResult:
+def load_portfolio_workbook(wb, sheets: list[str], sector_lookup: dict[str, str] | None = None) -> PortfolioResult:
     """Import selected sheets one at a time (low memory)."""
     import gc
 
@@ -332,7 +363,7 @@ def load_portfolio_workbook(wb, sheets: list[str]) -> PortfolioResult:
         if raw.empty:
             result.warnings.append(f"{label}: empty.")
             continue
-        part = clean_portfolio(raw)
+        part = clean_portfolio(raw, sector_lookup=sector_lookup)
         del raw
         if part.errors:
             result.warnings.append(f"{label}: " + " ".join(part.errors))
@@ -341,6 +372,8 @@ def load_portfolio_workbook(wb, sheets: list[str]) -> PortfolioResult:
         parts.append(part.entries)
         mapping.update(part.mapping)
         result.notes.append(f"{label}: {len(part.entries):,} holdings")
+        for n in part.notes:
+            result.notes.append(f"{label}: {n}")
         for w in part.warnings:
             result.warnings.append(f"{label}: {w}")
         gc.collect()
@@ -373,7 +406,7 @@ def dedupe_entries(entries: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return out, before - len(out)
 
 
-def load_portfolio_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) -> PortfolioResult:
+def load_portfolio_frames(frames: dict[str, pd.DataFrame], sheets: list[str], sector_lookup: dict[str, str] | None = None) -> PortfolioResult:
     parts, mapping = [], {}
     result = PortfolioResult(entries=pd.DataFrame())
     for sheet in sheets:
@@ -382,7 +415,7 @@ def load_portfolio_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) ->
         if raw is None or raw.empty:
             result.warnings.append(f"{label}: empty or missing.")
             continue
-        part = clean_portfolio(raw)
+        part = clean_portfolio(raw, sector_lookup=sector_lookup)
         if part.errors:
             result.warnings.append(f"{label}: " + " ".join(part.errors))
             continue
@@ -390,6 +423,8 @@ def load_portfolio_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) ->
         parts.append(part.entries)
         mapping.update(part.mapping)
         result.notes.append(f"{label}: {len(part.entries):,} holdings")
+        for n in part.notes:
+            result.notes.append(f"{label}: {n}")
         for w in part.warnings:
             result.warnings.append(f"{label}: {w}")
     if not parts:
@@ -400,13 +435,13 @@ def load_portfolio_frames(frames: dict[str, pd.DataFrame], sheets: list[str]) ->
     return result
 
 
-def load_portfolio_multi(file, filename: str, sheets: list) -> PortfolioResult:
+def load_portfolio_multi(file, filename: str, sheets: list, sector_lookup: dict[str, str] | None = None) -> PortfolioResult:
     from .parse import read_workbook
     try:
         frames = read_workbook(file, filename)
     except Exception as exc:
         return PortfolioResult(entries=pd.DataFrame(), errors=[f"Could not read the file: {exc}"])
-    return load_portfolio_frames(frames, [str(s) if not isinstance(s, int) else list(frames)[s] for s in sheets])
+    return load_portfolio_frames(frames, [str(s) if not isinstance(s, int) else list(frames)[s] for s in sheets], sector_lookup=sector_lookup)
 
 
 # ---------------------------------------------------------- asset classes --

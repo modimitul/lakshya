@@ -805,3 +805,50 @@ def test_intraday_and_delivery_tabs():
     res2 = clean(intraday, sheet_name="Sharekhan 2025- Intraday")
     assert set(res2.trades["type"]) == {"Equity Intraday"}
     assert res2.trades["month"].dt.strftime("%b-%y").iloc[0] == "Apr-25"
+
+
+def test_lot_list_template_with_sector_lookup():
+    """A simple per-lot sheet (Buy Date | STOCK | QTY | Buy | Cost) imports, with
+    sectors filled from the Stocks Management list and the rest warned into OTHER."""
+    import pandas as pd
+    from core.portfolio import clean_portfolio, sector_lookup_from_stocks
+
+    raw = pd.DataFrame({
+        "Buy Date": ["2021-08-09", "2021-08-12", "2024-01-05"],
+        "STOCK": ["BERGEPAINT", "RELAXO", "MYSTERYCO"],
+        "QTY": [10, 5, 2],
+        "Buy": [812.78, 1000.0, 50.0],
+        "Cost": [8127.8, 5000.0, 100.0],
+    })
+    stocks = pd.DataFrame({"stock": ["BERGEPAINT", "RELAXO"],
+                           "sector": ["Paints", "Footwear"],
+                           "marketcap": ["Large cap", "Mid cap"], "note": ["", ""]})
+    lookup = sector_lookup_from_stocks(stocks)
+    assert lookup == {"BERGEPAINT": "PAINTS", "RELAXO": "FOOTWEAR"}
+
+    res = clean_portfolio(raw, sector_lookup=lookup)
+    assert not res.errors
+    e = res.entries
+    assert len(e) == 3
+    assert e.loc[e["stock"] == "BERGEPAINT", "sector"].iloc[0] == "PAINTS"
+    assert e.loc[e["stock"] == "RELAXO", "sector"].iloc[0] == "FOOTWEAR"
+    assert e.loc[e["stock"] == "MYSTERYCO", "sector"].iloc[0] == "OTHER"
+    # Buy dates snap to month start
+    assert str(e.loc[e["stock"] == "BERGEPAINT", "month"].iloc[0].date()) == "2021-08-01"
+    assert abs(e["cost"].sum() - 13227.8) < 0.01
+    # the unmapped stock is called out
+    assert any("MYSTERYCO" in w for w in res.warnings)
+    # note mentions the fill
+    assert any("Stocks Management" in n for n in res.notes)
+
+
+def test_lot_list_template_without_lookup_goes_to_other():
+    import pandas as pd
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({"Buy Date": ["2023-05-02"], "STOCK": ["ABC"], "QTY": [1],
+                        "Buy": [10.0], "Cost": [10.0]})
+    res = clean_portfolio(raw)
+    assert not res.errors
+    assert res.entries["sector"].iloc[0] == "OTHER"
+    assert any("OTHER" in w for w in res.warnings)

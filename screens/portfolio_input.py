@@ -15,6 +15,7 @@ from core.portfolio import (
     dedupe_entries,
     entry_from_form,
     load_portfolio_workbook,
+    sector_lookup_from_stocks,
     looks_like_portfolio_header,
     match_sales,
     portfolio_template_bytes,
@@ -89,7 +90,7 @@ if mode == "Upload a file":
         upload = st.file_uploader(
             "Portfolio file (.xlsx, .xlsm, .xls, .csv). Several tabs are fine: pick them below.",
             type=["xlsx", "xlsm", "xls", "csv"], key="portfolio_upload",
-            help="Columns: MONTH, SECTORS, STOCK, QTY, BUY, COST, GIFT AMOUNT. Months may be dates or text like Jul-23.",
+            help="Columns: MONTH, SECTORS, STOCK, QTY, BUY, COST, GIFT AMOUNT — or a simple lot list with just Buy Date, STOCK, QTY, Buy, Cost. Months may be dates or text like Jul-23; missing sectors are filled from Stocks Management.",
         )
     wb = state.cached_workbook(upload, "portfolio_wb") if upload is not None else None
     if wb:
@@ -105,7 +106,7 @@ if mode == "Upload a file":
                             "other months untouched. Add: keeps everything, skips exact duplicates. Replace ALL: deletes every holding first.")
         if st.button("Import", type="primary", disabled=not chosen, key="portfolio_import"):
             with st.spinner("Importing …"):
-                result = load_portfolio_workbook(wb, chosen)
+                result = load_portfolio_workbook(wb, chosen, sector_lookup=sector_lookup_from_stocks(store.load_frame("_shared", "stocks")))
             show_messages(result)
             if result.ok:
                 incoming = result.entries
