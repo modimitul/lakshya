@@ -161,4 +161,10 @@ reports = st.Page("screens/reports.py", title="Dashboard Reports", icon=":materi
 stocks_page = st.Page("screens/stocks.py", title="Stocks Management", icon=":material/format_list_bulleted:")
 users_page = st.Page("screens/users_admin.py", title="User management", icon=":material/manage_accounts:")
 
-st.navigation([home, guide, trading, portfolio, benchmarks, reports, stocks_page, users_page]).run()
+# Sections draw a labelled divider in the sidebar: Overview | Books | Reports | Settings.
+st.navigation({
+    "Overview": [home, benchmarks, guide],
+    "Books": [trading, portfolio],
+    "Reports": [reports],
+    "Settings": [stocks_page, users_page],
+}).run()

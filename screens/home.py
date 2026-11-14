@@ -1,14 +1,87 @@
 """Home: status for every owner, admin family dashboards, owner management, how the numbers work."""
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from core import APP_NAME, APP_TAGLINE, state, store
 from core.benchmarks import period_label
-from core.filters import excel_table
+from core.filters import plain_table
 from core.formatting import inr, pct
 from core.metrics import cagr_from_monthly, kpis, monthly_summary, months_in, settled_only, yearly_summary
 from core.portfolio import asset_class_summary, match_sales, with_asset_class
+
+CAP_ORDER = ["Large cap", "Mid cap", "Small cap", "Unclassified"]
+CAP_COLORS = {"Large cap": "#1565C0", "Mid cap": "#42A5F5", "Small cap": "#90CAF9", "Unclassified": "#B0BEC5"}
+
+
+def _donut(labels, values, title, key, colors=None, clickable=False):
+    fig = go.Figure(go.Pie(labels=list(labels), values=list(values), hole=0.45,
+                           marker=(dict(colors=colors) if colors else None),
+                           hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
+    fig.update_layout(title=title, margin=dict(l=10, r=10, t=40, b=10), height=360,
+                      legend=dict(orientation="h", y=-0.1))
+    if clickable:
+        return st.plotly_chart(fig, width="stretch", key=key, on_select="rerun", selection_mode="points")
+    st.plotly_chart(fig, width="stretch", key=key)
+    return None
+
+
+def _with_caps(equity: pd.DataFrame) -> pd.DataFrame:
+    """Add a 'cap' column (Large/Mid/Small cap from Stocks Management, else Unclassified)."""
+    stock_list = store.load_frame("_shared", "stocks")
+    cap_map = {}
+    if stock_list is not None and {"stock", "marketcap"} <= set(stock_list.columns):
+        cap_map = {str(r["stock"]).strip().upper(): (str(r["marketcap"]).strip() or "Unclassified")
+                   for _, r in stock_list.iterrows()}
+    equity = equity.copy()
+    equity["cap"] = equity["stock"].astype(str).str.strip().str.upper().map(
+        lambda stk: cap_map.get(stk) or "Unclassified")
+    return equity
+
+
+def cap_pie_with_table(equity: pd.DataFrame, key: str, title: str) -> None:
+    """Marketcap donut for Equity holdings; clicking a slice lists that cap's stocks below."""
+    if equity is None or equity.empty:
+        st.info("No Equity-class holdings yet.")
+        return
+    equity = _with_caps(equity)
+    cap_sum = equity.groupby("cap")["cost"].sum()
+    order = [c for c in CAP_ORDER if c in cap_sum.index]
+    cap_sum = cap_sum.reindex(order)
+    fig = go.Figure(go.Pie(labels=list(cap_sum.index), values=list(cap_sum.values), hole=0.45,
+                           marker=dict(colors=[CAP_COLORS[c] for c in cap_sum.index]),
+                           hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
+    fig.update_layout(title=title, margin=dict(l=10, r=10, t=40, b=10), height=360,
+                      legend=dict(orientation="h", y=-0.1))
+    label = None
+    try:
+        from streamlit_plotly_events import plotly_events
+        clicked = plotly_events(fig, click_event=True, override_height=360, key=key)
+        if clicked:
+            pn = clicked[0].get("pointNumber")
+            if pn is not None and 0 <= int(pn) < len(cap_sum.index):
+                label = str(cap_sum.index[int(pn)])
+    except Exception:
+        st.plotly_chart(fig, width="stretch", key=f"{key}_fallback")
+    st.caption("**Click a slice** to list that marketcap's stocks below."
+               + (" Unclassified = stocks without a Marketcap in Stocks Management." if "Unclassified" in cap_sum.index else ""))
+    if not label or label not in cap_sum.index:
+        return
+    sub = equity[equity["cap"] == label]
+    by_stock = (sub.groupby("stock").agg(Sector=("sector", "first"), Invested=("cost", "sum"))
+                .reset_index().rename(columns={"stock": "Stock"})
+                .sort_values("Invested", ascending=False))
+    cap_total = float(by_stock["Invested"].sum())
+    st.markdown(f"**{label} stocks** ({len(by_stock)})")
+    shown = by_stock.copy()
+    shown["% of cap"] = (shown["Invested"] / cap_total * 100).map(lambda v: pct(v, 1) + "%") if cap_total else "—"
+    shown["Invested"] = shown["Invested"].map(lambda v: inr(v, prefix="₹"))
+    shown = pd.concat([shown, pd.DataFrame([{"Stock": "Grand Total", "Sector": "",
+                                             "Invested": inr(cap_total, prefix="₹"), "% of cap": "100.0%"}])],
+                      ignore_index=True)
+    plain_table(shown, key=f"{key}_table", full_height=len(shown) <= 25)
+
 
 st.title(APP_NAME)
 st.caption(APP_TAGLINE)
@@ -37,7 +110,31 @@ for i, u in enumerate(users_shown):
             if portfolio is None or portfolio.empty:
                 st.write("Long term: no holdings yet")
             else:
-                st.write(f"Long term: {portfolio['stock'].nunique()} stocks, {inr(portfolio['cost'].sum(), prefix='₹')}")
+                _m = str(state.get_meta(u["slug"]).get("sale_match_method", "lifo")).lower()
+                _rem, _ = match_sales(portfolio, method=_m)
+                _n_stk = int(_rem["stock"].nunique()) if not _rem.empty else 0
+                _c_rem = float(_rem["cost"].sum()) if not _rem.empty else 0.0
+                st.write(f"Long term: {_n_stk} stocks held, {inr(_c_rem, prefix='₹')}")
+
+# --------------------------------------- my investments: pies for this owner --
+_me = state.current_user()
+_my_portfolio = state.get_frame("portfolio", _me)
+if _my_portfolio is not None and not _my_portfolio.empty:
+    st.write("")
+    st.subheader(f"Investments — {state.user_name(_me)}")
+    _my_method = str(state.get_meta(_me).get("sale_match_method", "lifo")).lower()
+    _my_rem, _ = match_sales(_my_portfolio, method=_my_method)
+    if _my_rem.empty:
+        st.info("Nothing is currently held: every purchase has been sold.")
+    else:
+        _my_cls = with_asset_class(_my_rem, state.get_meta(_me).get("asset_class_overrides", {}))
+        _my_sum = asset_class_summary(_my_cls)
+        mcol1, mcol2 = st.columns(2)
+        with mcol1:
+            _donut(_my_sum["Asset class"], _my_sum["Cost"], "Allocation by asset class", "my_class_pie")
+        with mcol2:
+            cap_pie_with_table(_my_cls[_my_cls["asset_class"] == "Equity"],
+                               key="my_cap_pie", title="Equity by marketcap")
 
 # ------------------------------------------- administrator: family dashboards --
 if state.is_admin():
@@ -82,7 +179,7 @@ if state.is_admin():
                 "Best month": f"{k['best_month'][0]} ({inr(k['best_month'][1], prefix='₹')})",
                 "Worst month": f"{k['worst_month'][0]} ({inr(k['worst_month'][1], prefix='₹')})",
             })
-        excel_table(pd.DataFrame(rows), key="tbl_family_trading")
+        plain_table(pd.DataFrame(rows), key="tbl_family_trading")
 
         st.markdown("**Investments — asset class allocation** (current holdings)")
         per_member, class_order, member_frames = {}, [], {}
@@ -110,13 +207,19 @@ if state.is_admin():
             table["Total"] = table.sum(axis=1, skipna=True)
             grand = float(table["Total"].sum())
             table["% of family"] = table["Total"] / grand * 100 if grand else pd.NA
+            class_costs = table["Total"].astype(float)
             shown = table.reset_index().rename(columns={"index": "Asset class"})
             for col in shown.columns:
                 if col == "Asset class":
                     continue
                 shown[col] = shown[col].map(lambda v: (pct(v, 1) + "%") if col == "% of family" and pd.notna(v)
                                             else (inr(v) if pd.notna(v) else "—"))
-            excel_table(shown, key="tbl_family_classes")
+            fc1, fc2 = st.columns([1.3, 1])
+            with fc1:
+                plain_table(shown, key="tbl_family_classes", full_height=True)
+            with fc2:
+                _donut(class_costs.index, class_costs.values,
+                       "Family allocation by asset class (all members)", "family_class_pie")
 
             # ---- holdings by stock, highest family investment first ----
             st.markdown("**Investments — holdings by stock** (highest family investment on top)")
@@ -144,7 +247,7 @@ if state.is_admin():
                 shown_stocks[col] = shown_stocks[col].map(
                     lambda v, c=col: (pct(v, 1) + "%") if c == "% of family" and pd.notna(v)
                     else (inr(v) if pd.notna(v) else "—"))
-            excel_table(shown_stocks, key="tbl_family_bystock")
+            plain_table(shown_stocks, key="tbl_family_bystock")
 
             # ---- Equity only: how much sits in Large / Mid / Small cap ----
             st.markdown("**Equity by marketcap** (Equity asset class only; caps come from Stocks Management)")
@@ -153,27 +256,7 @@ if state.is_admin():
             if equity.empty:
                 st.info("No Equity-class holdings among family members yet.")
             else:
-                stock_list = store.load_frame("_shared", "stocks")
-                cap_map = {}
-                if stock_list is not None and {"stock", "marketcap"} <= set(stock_list.columns):
-                    cap_map = {str(r["stock"]).strip().upper(): (str(r["marketcap"]).strip() or "Unclassified")
-                               for _, r in stock_list.iterrows()}
-                equity["cap"] = equity["stock"].astype(str).str.strip().str.upper().map(
-                    lambda stk: cap_map.get(stk) or "Unclassified")
-                cap_sum = equity.groupby("cap")["cost"].sum()
-                order = [c for c in ("Large cap", "Mid cap", "Small cap", "Unclassified") if c in cap_sum.index]
-                cap_sum = cap_sum.reindex(order)
-                import plotly.graph_objects as go
-                fig = go.Figure(go.Pie(labels=cap_sum.index, values=cap_sum.values, hole=0.45,
-                                       marker=dict(colors=["#1565C0", "#42A5F5", "#90CAF9", "#B0BEC5"]),
-                                       hovertemplate="%{label}<br>₹%{value:,.0f} (%{percent})<extra></extra>"))
-                fig.update_layout(title="Family Equity holdings by marketcap",
-                                  margin=dict(l=10, r=10, t=40, b=10), height=380,
-                                  legend=dict(orientation="h", y=-0.1))
-                st.plotly_chart(fig, width="stretch", key="family_cap_pie")
-                if "Unclassified" in cap_sum.index:
-                    st.caption("Unclassified = stocks without a Marketcap in Stocks Management — fill it there "
-                               "and this chart refines itself.")
+                cap_pie_with_table(equity, key="family_cap_pie", title="Family Equity holdings by marketcap")
 
 st.write("")
 l, m, r = st.columns(3)

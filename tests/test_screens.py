@@ -729,3 +729,115 @@ def test_default_owner_is_used_when_nobody_signed_in(tmp_path, monkeypatch):
     assert any(t.label.startswith("Show the monthly table") for t in at.toggle)  # table off by default, charts open
     assert any(t.label.startswith("Show the capital and brokerage tables") for t in at.toggle)
     assert by_label(at.multiselect, "Benchmarks to compare").value[:3] == ["GOLD BEES", "SILVER BEES", "Nifty ROI"]
+
+
+def test_v31_intraday_auto_sale_date_and_sector_column():
+    """Equity Intraday manual trades get Sale date = Buy date automatically, and the
+    trades grid carries an editable sector column prefilled from Stocks Management."""
+    import pandas as pd
+    from core import store
+
+    store.save_frame("_shared", "stocks", pd.DataFrame(
+        [{"stock": "TCS", "sector": "IT", "marketcap": "Large cap", "note": ""}]))
+
+    at = app("screens/trading_input.py")
+    at.radio[0].set_value("Add trades manually").run()
+    by_label(at.selectbox, "Type").set_value("Equity Intraday").run()
+    # no "Sale date (optional)" field for intraday
+    assert not [w for w in at.date_input if w.label == "Sale date (optional)"]
+    by_label(at.selectbox, "Stock").set_value("TCS")
+    by_label(at.number_input, "Qty").set_value(10)
+    by_label(at.number_input, "Buy price").set_value(100.0)
+    by_label(at.number_input, "Sell price").set_value(105.0)
+    import datetime as dt
+    by_label(at.date_input, "Buy date *").set_value(dt.date(2025, 7, 14))
+    by_label(at.button, "Add trade").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    saved = store.load_frame("owner", "trades")
+    assert pd.Timestamp(saved["sale_date"].iloc[0]).date() == dt.date(2025, 7, 14)   # auto same-day
+
+    # grid shows sector prefilled from Stocks Management; editing it persists
+    at2 = app("screens/trading_input.py")
+    trades_editor = next(e for e in at2.get("data_editor") if "To investment" in e.value.columns)
+    disp = trades_editor.value.reset_index(drop=True)
+    assert "sector" in disp.columns and disp["sector"].iloc[0] == "IT"
+    at2.session_state[trades_editor.key] = {"edited_rows": {"0": {"sector": "FINANCE"}},
+                                            "added_rows": [], "deleted_rows": []}
+    by_label(at2.button, "Save changes").click().run()
+    assert not at2.exception, [e.value for e in at2.exception]
+    assert store.load_frame("owner", "trades")["sector"].iloc[0] == "FINANCE"
+
+
+def test_v31_entries_saved_above_open_positions_with_filter_and_totals():
+    """Investment Book: Entries saved sits above Open positions; All entries is stock-sorted,
+    filterable by stock and shows a Grand Total; sector is editable in Remaining holdings."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23", "Sep-23"],
+        "SECTORS": ["IT", "PAINTS", "IT"],
+        "STOCK": ["TCS", "BERGEPAINT", "INFY"],
+        "QTY": [10, 20, 5],
+        "BUY": [3000.0, 800.0, 1500.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app("screens/portfolio_input.py")
+    labels = [ex.label for ex in at.expander]
+    i_entries = next(i for i, l in enumerate(labels) if l.startswith("Entries saved"))
+    i_open = next(i for i, l in enumerate(labels) if l.startswith("Open positions"))
+    assert i_entries < i_open                                         # point 3
+
+    # All entries grid is sorted by stock
+    editor = next(e for e in at.get("data_editor") if "sale_date" in e.value.columns)
+    stocks_shown = editor.value["stock"].tolist()
+    assert stocks_shown == sorted(stocks_shown)                       # point 5
+
+    # grand total line present
+    assert any("Grand Total" in str(m.value) for m in at.markdown)    # points 4-5
+
+    # filter by stock narrows the grid
+    by_label(at.selectbox, "Filter by stock").set_value("TCS").run()
+    assert not at.exception, [e.value for e in at.exception]
+    editor = next(e for e in at.get("data_editor") if "sale_date" in e.value.columns)
+    assert editor.value["stock"].tolist() == ["TCS"]
+
+    # Remaining holdings: sector editable, written back
+    at2 = app("screens/portfolio_input.py")
+    by_label(at2.radio, "View").set_value("Remaining holdings (after sales)").run()
+    rem_editor = next(e for e in at2.get("data_editor") if "buy_price" in e.value.columns)
+    disp = rem_editor.value.reset_index(drop=True)
+    pos = int(disp.index[disp["stock"] == "BERGEPAINT"][0])
+    at2.session_state[rem_editor.key] = {"edited_rows": {str(pos): {"sector": "CHEMICALS"}},
+                                         "added_rows": [], "deleted_rows": []}
+    by_label(at2.button, "Save corrections").click().run()
+    assert not at2.exception, [e.value for e in at2.exception]
+    port = store.load_frame("owner", "portfolio")
+    assert port.loc[port["stock"] == "BERGEPAINT", "sector"].iloc[0] == "CHEMICALS"
+
+
+def test_v31_home_counts_match_dashboard_and_pies_render():
+    """Home long-term figures use remaining holdings (like the Dashboard), and the
+    per-user asset-class / marketcap pies render."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio, sale_from_form
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23"], "SECTORS": ["IT", "PAINTS"],
+        "STOCK": ["TCS", "BERGEPAINT"], "QTY": [10, 20], "BUY": [3000.0, 800.0],
+    })
+    entries = clean_portfolio(raw).entries
+    # sell all of TCS: Home should now count 1 stock held, cost = Berger only
+    sale = sale_from_form(pd.Timestamp("2024-01-01").date(), "IT", "TCS", 10, 3500.0, 0.0).entries
+    store.save_frame("owner", "portfolio", pd.concat([entries, sale], ignore_index=True))
+    store.save_frame("_shared", "stocks", pd.DataFrame(
+        [{"stock": "TCS", "sector": "IT", "marketcap": "Large cap", "note": ""},
+         {"stock": "BERGEPAINT", "sector": "PAINTS", "marketcap": "Mid cap", "note": ""}]))
+
+    at = app()
+    body = " ".join(str(m.value) for m in at.markdown)
+    assert "1 stocks held" in body or any("1 stocks held" in str(w.value) for w in at.markdown), body[:500]
+    assert not at.exception

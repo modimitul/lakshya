@@ -193,7 +193,7 @@ elif mode == "Record a sale":
             st.caption("Tick **Remove** on a wrongly recorded sale and press **Remove selected sales** to undo it — "
                        "the sold quantity goes back into holdings (purchases re-match automatically) and the "
                        "Dashboard's profit booked updates.")
-            s_order = sells.sort_values("month", ascending=False).index
+            s_order = sells.sort_values(["stock", "month"], ascending=[True, False]).index
             sgrid = pd.DataFrame({
                 "Remove": False,
                 "Sold in": pd.to_datetime(entries.loc[s_order, "month"]),
@@ -215,6 +215,8 @@ elif mode == "Record a sale":
                     "Sale value": st.column_config.NumberColumn("Sale value (₹)", format="%.0f"),
                 },
             )
+            st.markdown(f"**Grand Total** — {len(sgrid):,} sale(s) · Sale value "
+                        f"{inr(pd.to_numeric(sgrid['Sale value'], errors='coerce').fillna(0).sum(), prefix='₹')}")
             if st.button("Remove selected sales", key="sales_remove"):
                 rm = sedited["Remove"].fillna(False).astype(bool).to_numpy()
                 if not rm.any():
@@ -338,86 +340,6 @@ with st.expander(f"SIP plans — auto-post monthly instalments ({n_active} activ
             st.rerun()
 
 if entries is not None and not entries.empty:
-    # ------------------------------------------------------ open positions ----
-    open_remaining, _ = match_sales(entries, method=sale_method)
-    open_held = (open_remaining.groupby("stock")
-                 .agg(sector=("sector", "first"), qty=("qty", "sum"), cost=("cost", "sum"))
-                 .reset_index()) if not open_remaining.empty else pd.DataFrame()
-    if not open_held.empty:
-        open_held = open_held[pd.to_numeric(open_held["qty"], errors="coerce").fillna(0) > 0]
-    if not open_held.empty:
-        with st.expander(f"Open positions for {owner} ({len(open_held):,} holdings)", expanded=False):
-            st.caption(f"Everything still held (purchases minus {sale_method.upper()}-matched sales), one row per stock. "
-                       "To close or trim a position, fill **Sell qty** and **Sell price** (and charges if any) on its row and press "
-                       "**Record sales** — a SELL row is added to Entries saved below and the profit booked flows into "
-                       "Dashboard Reports → Investments.")
-            today = dt.date.today()
-            ogrid = pd.DataFrame({
-                "stock": open_held["stock"].astype(str),
-                "sector": open_held["sector"].astype(str),
-                "qty": pd.to_numeric(open_held["qty"], errors="coerce"),
-                "cost": pd.to_numeric(open_held["cost"], errors="coerce"),
-                "sell_qty": pd.Series([float("nan")] * len(open_held)),
-                "sell_price": pd.Series([float("nan")] * len(open_held)),
-                "sell_charges": pd.Series([float("nan")] * len(open_held)),
-                "sale_month": pd.Series([pd.Timestamp(today.year, today.month, 1)] * len(open_held)),
-            })
-            ogrid["avg"] = ogrid["cost"] / ogrid["qty"].where(ogrid["qty"] > 0)
-            ogrid = ogrid[["stock", "sector", "qty", "cost", "avg", "sell_qty", "sell_price", "sell_charges", "sale_month"]]
-            oedited = st.data_editor(
-                ogrid, hide_index=True, width="stretch", height=min(len(ogrid) + 1, 14) * 35 + 3,
-                disabled=["stock", "sector", "qty", "cost", "avg"],
-                key=f"open_holdings_{state.version('portfolio_version')}",
-                column_config={
-                    "stock": st.column_config.TextColumn("Stock"),
-                    "sector": st.column_config.TextColumn("Sector"),
-                    "qty": st.column_config.NumberColumn("Qty held", format="%.0f"),
-                    "cost": st.column_config.NumberColumn("Cost held (₹)", format="%.0f"),
-                    "avg": st.column_config.NumberColumn("Avg cost", format="%.2f"),
-                    "sell_qty": st.column_config.NumberColumn("Sell qty", min_value=0, format="%.0f"),
-                    "sell_price": st.column_config.NumberColumn("Sell price", min_value=0.0, format="%.2f"),
-                    "sell_charges": st.column_config.NumberColumn("Charges (₹)", min_value=0.0, format="%.2f"),
-                    "sale_month": st.column_config.DateColumn("Sale month", format="MMM YY"),
-                },
-            )
-            if st.button("Record sales", type="primary", key="open_holdings_sell"):
-                picked = oedited[(pd.to_numeric(oedited["sell_qty"], errors="coerce").fillna(0) > 0)
-                                 | (pd.to_numeric(oedited["sell_price"], errors="coerce").fillna(0) > 0)]
-                if picked.empty:
-                    st.info("Fill Sell qty and Sell price on at least one row first.")
-                else:
-                    problems, pending = [], []
-                    for _, prow in picked.iterrows():
-                        s_qty = pd.to_numeric(pd.Series([prow["sell_qty"]]), errors="coerce").iloc[0]
-                        s_price = pd.to_numeric(pd.Series([prow["sell_price"]]), errors="coerce").iloc[0]
-                        s_charges = pd.to_numeric(pd.Series([prow["sell_charges"]]), errors="coerce").iloc[0]
-                        s_charges = 0.0 if pd.isna(s_charges) else float(s_charges)
-                        held_q = float(prow["qty"])
-                        if pd.isna(s_qty) or s_qty <= 0 or pd.isna(s_price) or s_price <= 0:
-                            problems.append(f"{prow['stock']}: both Sell qty and Sell price must be greater than 0.")
-                        elif float(s_qty) > held_q + 1e-9:
-                            problems.append(f"{prow['stock']}: you hold {held_q:g}; cannot sell {float(s_qty):g}.")
-                        else:
-                            s_month = pd.Timestamp(prow["sale_month"]).date() if pd.notna(prow["sale_month"]) else today
-                            s_month = dt.date(s_month.year, s_month.month, 1)
-                            pending.append((s_month, str(prow["sector"]), str(prow["stock"]), float(s_qty), float(s_price), s_charges))
-                    if problems:
-                        for p_ in problems:
-                            st.error(p_)
-                    else:
-                        combined, booked = entries, []
-                        for s_month, s_sector, s_stock, s_qty, s_price, s_charges in pending:
-                            result = sale_from_form(s_month, s_sector, s_stock, s_qty, s_price, s_charges)
-                            show_messages(result)
-                            if result.ok:
-                                combined = pd.concat([combined, result.entries], ignore_index=True)
-                                booked.append(s_stock)
-                        if booked:
-                            save_portfolio(combined, state.get_meta().get("portfolio_source", "manual entry"))
-                            st.success(f"Recorded {len(booked)} sale(s): {', '.join(booked)}. "
-                                       "The SELL rows are in Entries saved below and profit booked is on the Dashboard.")
-                            st.rerun()
-
     n_sells = int((entries["side"] == "sell").sum()) if "side" in entries else 0
     n_buys = len(entries) - n_sells
     total = float(entries.loc[entries["side"] != "sell", "cost"].sum()) if "side" in entries else float(entries["cost"].sum())
@@ -431,10 +353,10 @@ if entries is not None and not entries.empty:
             if remaining.empty:
                 st.info("Nothing is currently held: every purchase has been sold.")
             else:
-                st.caption("**Qty held** and **Cost held** are editable: corrections are written back to the original "
-                           "purchase lot, leaving the sold portion (and past profit booked) untouched. "
-                           "Set Qty held to 0 to drop a wrongly-held lot. Buy price is Cost ÷ Qty (read-only).")
-                rem_all = remaining.sort_values("month", ascending=False, na_position="last")
+                st.caption("Sorted by stock. **Sector, Qty held** and **Cost held** are editable: corrections are "
+                           "written back to the original purchase lot, leaving the sold portion (and past profit "
+                           "booked) untouched. Set Qty held to 0 to drop a wrongly-held lot. Buy price is Cost ÷ Qty (read-only).")
+                rem_all = remaining.sort_values(["stock", "month"], ascending=[True, False], na_position="last")
                 _rq = pd.to_numeric(rem_all["qty"], errors="coerce")
                 rem_all = rem_all.assign(buy_price=pd.to_numeric(rem_all["cost"], errors="coerce") / _rq.where(_rq > 0))
                 rem_f = rem_all
@@ -447,11 +369,11 @@ if entries is not None and not entries.empty:
                 })
                 redited = st.data_editor(
                     rgrid, hide_index=True, width="stretch", height=min(len(rgrid) + 1, 14) * 35 + 3,
-                    disabled=["month", "sector", "stock", "buy_price"],
+                    disabled=["month", "stock", "buy_price"],
                     key=f"remaining_grid_{state.version('portfolio_version')}_{abs(hash(tuple(rem_f.index))) % 100000}",
                     column_config={
                         "month": st.column_config.DateColumn("Bought", format="MMM YY"),
-                        "sector": st.column_config.TextColumn("Sector"),
+                        "sector": st.column_config.TextColumn("Sector", help="Editable — written back to this purchase lot."),
                         "stock": st.column_config.TextColumn("Stock"),
                         "qty": st.column_config.NumberColumn("Qty held", min_value=0, format="%.0f"),
                         "buy_price": st.column_config.NumberColumn("Buy price", format="%.2f",
@@ -459,6 +381,9 @@ if entries is not None and not entries.empty:
                         "cost": st.column_config.NumberColumn("Cost held (₹)", min_value=0, format="%.0f"),
                     },
                 )
+                st.markdown(f"**Grand Total** — {len(rgrid):,} lot(s) · Qty "
+                            f"{pd.to_numeric(rgrid['qty'], errors='coerce').fillna(0).sum():,.0f} · Cost held "
+                            f"{inr(pd.to_numeric(rgrid['cost'], errors='coerce').fillna(0).sum(), prefix='₹')}")
                 if st.button("Save corrections", type="primary", key="remaining_save"):
                     updated = entries.copy()
                     fixed = 0
@@ -467,6 +392,11 @@ if entries is not None and not entries.empty:
                         sold_q = float(rem.iloc[pos]["sold_qty"]) if pd.notna(rem.iloc[pos]["sold_qty"]) else 0.0
                         sold_c = float(rem.iloc[pos]["sold_cost"]) if pd.notna(rem.iloc[pos]["sold_cost"]) else 0.0
                         row_changed = False
+                        if cell_changed(rgrid.iloc[pos]["sector"], redited.iloc[pos]["sector"]):
+                            new_sec = str(redited.iloc[pos]["sector"] or "").strip().upper()
+                            if new_sec:
+                                updated.at[src, "sector"] = new_sec
+                                row_changed = True
                         for col in ("qty", "cost"):
                             if cell_changed(rgrid.iloc[pos][col], redited.iloc[pos][col]):
                                 new_rem = redited.iloc[pos][col]
@@ -490,7 +420,8 @@ if entries is not None and not entries.empty:
                 st.caption("Each row is one **purchase lot**; its sale shows on the same row under Sale date / "
                            "Sale price (no separate SELL rows here). Remove or bulk-correct the underlying sale "
                            "rows in **Record a sale → Sales recorded**.")
-            st.caption("Cells are editable; press **Save changes** when done. Value is recalculated as Qty × Price "
+            st.caption("Sorted by stock (use the filter to see one stock). Cells are editable — including **Sector** — "
+                       "press **Save changes** when done. Value is recalculated as Qty × Price "
                        "and months snap to their first day. **Sale date / Sale price**: fill both on an unsold lot "
                        "to book a sale of the whole lot; on a sold lot, edit them to correct that sale "
                        "(partial sales go through Record a sale).")
@@ -513,7 +444,13 @@ if entries is not None and not entries.empty:
                     st.warning(f"{zero_lot_sales + unmatched} sale(s) could not be fully matched to purchase lots "
                                "(sold more than was held by the sale month?). Check Record a sale → Sales recorded.")
 
-            order_all = entries[buys_mask_all].sort_values("month", ascending=False, na_position="last").index
+            _buy_rows = entries[buys_mask_all]
+            _stock_choices = sorted(_buy_rows["stock"].dropna().astype(str).str.strip().str.upper().unique()) if "stock" in _buy_rows else []
+            _f1, _ = st.columns([1.4, 2.6])
+            stock_filter = _f1.selectbox("Filter by stock", ["All stocks"] + _stock_choices, key="pf_entries_stock_filter")
+            if stock_filter != "All stocks":
+                _buy_rows = _buy_rows[_buy_rows["stock"].astype(str).str.strip().str.upper() == stock_filter]
+            order_all = _buy_rows.sort_values(["stock", "month"], ascending=[True, False], na_position="last").index
             editable_cols = [c for c in ("month", "sector", "stock", "qty", "buy", "charges", "gift") if c in entries.columns]
             base = entries.loc[order_all, editable_cols].copy()
 
@@ -560,6 +497,13 @@ if entries is not None and not entries.empty:
                     "gift": st.column_config.NumberColumn("Gift", format="%.0f"),
                 },
             )
+            _gt_qty = pd.to_numeric(grid.get("qty"), errors="coerce").fillna(0).sum()
+            _gt_cost = (pd.to_numeric(grid.get("qty"), errors="coerce").fillna(0)
+                        * pd.to_numeric(grid.get("buy"), errors="coerce").fillna(0)).sum()
+            _gt_gift = pd.to_numeric(grid.get("gift"), errors="coerce").fillna(0).sum() if "gift" in grid else 0.0
+            st.markdown(f"**Grand Total**{'' if stock_filter == 'All stocks' else f' ({stock_filter})'} — "
+                        f"{len(grid):,} lot(s) · Qty {_gt_qty:,.0f} · Cost {inr(_gt_cost, prefix='₹')}"
+                        + (f" · Gift {inr(_gt_gift, prefix='₹')}" if _gt_gift else ""))
             r0, r1, r2 = st.columns([1, 1, 2])
             if r0.button("Save changes", type="primary", key="portfolio_save_edits"):
                 updated, changed = apply_grid_edits(entries, order, edited, editable_cols)
@@ -660,6 +604,105 @@ if entries is not None and not entries.empty:
             if confirm and r2.button("Delete all holdings", key="portfolio_delete_all"):
                 save_portfolio(None, "")
                 st.rerun()
+    # ------------------------------------------------------ open positions ----
+    open_remaining, _ = match_sales(entries, method=sale_method)
+    open_held = (open_remaining.groupby("stock")
+                 .agg(sector=("sector", "first"), qty=("qty", "sum"), cost=("cost", "sum"))
+                 .reset_index()) if not open_remaining.empty else pd.DataFrame()
+    if not open_held.empty:
+        open_held = open_held[pd.to_numeric(open_held["qty"], errors="coerce").fillna(0) > 0]
+    if not open_held.empty:
+        with st.expander(f"Open positions for {owner} ({len(open_held):,} holdings)", expanded=False):
+            st.caption(f"Everything still held (purchases minus {sale_method.upper()}-matched sales), one row per stock, "
+                       "sorted by stock. **Sector is editable** — a change applies to every entry of that stock. "
+                       "To close or trim a position, fill **Sell qty** and **Sell price** (and charges if any) on its row and press "
+                       "**Record sales / save changes** — a SELL row is added to Entries saved above and the profit booked flows into "
+                       "Dashboard Reports → Investments.")
+            today = dt.date.today()
+            ogrid = pd.DataFrame({
+                "stock": open_held["stock"].astype(str),
+                "sector": open_held["sector"].astype(str),
+                "qty": pd.to_numeric(open_held["qty"], errors="coerce"),
+                "cost": pd.to_numeric(open_held["cost"], errors="coerce"),
+                "sell_qty": pd.Series([float("nan")] * len(open_held)),
+                "sell_price": pd.Series([float("nan")] * len(open_held)),
+                "sell_charges": pd.Series([float("nan")] * len(open_held)),
+                "sale_month": pd.Series([pd.Timestamp(today.year, today.month, 1)] * len(open_held)),
+            })
+            ogrid["avg"] = ogrid["cost"] / ogrid["qty"].where(ogrid["qty"] > 0)
+            ogrid = ogrid[["stock", "sector", "qty", "cost", "avg", "sell_qty", "sell_price", "sell_charges", "sale_month"]]
+            oedited = st.data_editor(
+                ogrid, hide_index=True, width="stretch", height=min(len(ogrid) + 1, 14) * 35 + 3,
+                disabled=["stock", "qty", "cost", "avg"],
+                key=f"open_holdings_{state.version('portfolio_version')}",
+                column_config={
+                    "stock": st.column_config.TextColumn("Stock"),
+                    "sector": st.column_config.TextColumn("Sector", help="Editable — saved to every entry of this stock."),
+                    "qty": st.column_config.NumberColumn("Qty held", format="%.0f"),
+                    "cost": st.column_config.NumberColumn("Cost held (₹)", format="%.0f"),
+                    "avg": st.column_config.NumberColumn("Avg cost", format="%.2f"),
+                    "sell_qty": st.column_config.NumberColumn("Sell qty", min_value=0, format="%.0f"),
+                    "sell_price": st.column_config.NumberColumn("Sell price", min_value=0.0, format="%.2f"),
+                    "sell_charges": st.column_config.NumberColumn("Charges (₹)", min_value=0.0, format="%.2f"),
+                    "sale_month": st.column_config.DateColumn("Sale month", format="MMM YY"),
+                },
+            )
+            st.markdown(f"**Grand Total** — {len(ogrid):,} holding(s) · Qty "
+                        f"{pd.to_numeric(ogrid['qty'], errors='coerce').fillna(0).sum():,.0f} · Cost held "
+                        f"{inr(pd.to_numeric(ogrid['cost'], errors='coerce').fillna(0).sum(), prefix='₹')}")
+            if st.button("Record sales / save changes", type="primary", key="open_holdings_sell"):
+                # sector edits first: apply to every entry of that stock
+                sector_fixed = []
+                for pos in range(len(ogrid)):
+                    if cell_changed(ogrid.iloc[pos]["sector"], oedited.iloc[pos]["sector"]):
+                        s_stock = str(ogrid.iloc[pos]["stock"]).strip().upper()
+                        new_sec = str(oedited.iloc[pos]["sector"] or "").strip().upper()
+                        if new_sec:
+                            entries.loc[entries["stock"].astype(str).str.strip().str.upper() == s_stock, "sector"] = new_sec
+                            sector_fixed.append(s_stock)
+                if sector_fixed:
+                    save_portfolio(entries, state.get_meta().get("portfolio_source", "manual entry"))
+                picked = oedited[(pd.to_numeric(oedited["sell_qty"], errors="coerce").fillna(0) > 0)
+                                 | (pd.to_numeric(oedited["sell_price"], errors="coerce").fillna(0) > 0)]
+                if picked.empty:
+                    if sector_fixed:
+                        st.session_state["investbook_flash"] = [
+                            f"Updated the sector on every entry of: {', '.join(sector_fixed)}."]
+                        st.rerun()
+                    st.info("Fill Sell qty and Sell price on at least one row first (or change a Sector to save it).")
+                else:
+                    problems, pending = [], []
+                    for _, prow in picked.iterrows():
+                        s_qty = pd.to_numeric(pd.Series([prow["sell_qty"]]), errors="coerce").iloc[0]
+                        s_price = pd.to_numeric(pd.Series([prow["sell_price"]]), errors="coerce").iloc[0]
+                        s_charges = pd.to_numeric(pd.Series([prow["sell_charges"]]), errors="coerce").iloc[0]
+                        s_charges = 0.0 if pd.isna(s_charges) else float(s_charges)
+                        held_q = float(prow["qty"])
+                        if pd.isna(s_qty) or s_qty <= 0 or pd.isna(s_price) or s_price <= 0:
+                            problems.append(f"{prow['stock']}: both Sell qty and Sell price must be greater than 0.")
+                        elif float(s_qty) > held_q + 1e-9:
+                            problems.append(f"{prow['stock']}: you hold {held_q:g}; cannot sell {float(s_qty):g}.")
+                        else:
+                            s_month = pd.Timestamp(prow["sale_month"]).date() if pd.notna(prow["sale_month"]) else today
+                            s_month = dt.date(s_month.year, s_month.month, 1)
+                            pending.append((s_month, str(prow["sector"]), str(prow["stock"]), float(s_qty), float(s_price), s_charges))
+                    if problems:
+                        for p_ in problems:
+                            st.error(p_)
+                    else:
+                        combined, booked = entries, []
+                        for s_month, s_sector, s_stock, s_qty, s_price, s_charges in pending:
+                            result = sale_from_form(s_month, s_sector, s_stock, s_qty, s_price, s_charges)
+                            show_messages(result)
+                            if result.ok:
+                                combined = pd.concat([combined, result.entries], ignore_index=True)
+                                booked.append(s_stock)
+                        if booked:
+                            save_portfolio(combined, state.get_meta().get("portfolio_source", "manual entry"))
+                            st.success(f"Recorded {len(booked)} sale(s): {', '.join(booked)}. "
+                                       "The SELL rows are in Entries saved and profit booked is on the Dashboard.")
+                            st.rerun()
+
 else:
     st.info("No holdings yet for this owner. Upload a file or add entries with the form.")
 

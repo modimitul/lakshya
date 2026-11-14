@@ -178,6 +178,23 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.1
+- **Sector editable everywhere** — Trading Book grids now carry a Sector column (prefilled from Stocks
+  Management, editable, saved with the trades); in the Investment Book, Sector can be changed in All
+  entries, Remaining holdings (written back to the lot) and Open positions (applies to every entry of
+  that stock).
+- **Equity Intraday** manual trades set the Sale date automatically to the Buy date.
+- Investment Book: **Entries saved now sits above Open positions**; All entries has a **stock filter**;
+  every book table is **sorted by stock** with a **Grand Total** underneath (Trades saved stays sorted
+  by latest Buy date).
+- Dashboard Reports: tables are plain again (no header filters) and the Asset class table shows all
+  rows without a scroll bar.
+- Home: long-term figures = what the Dashboard shows (remaining holdings); no table filters; per-user
+  **asset-class pie** and a **marketcap pie** whose slices click through to the stocks in that cap;
+  the admin's Family dashboards get the same two pies family-wide.
+- Navigation: Benchmarks sits right after Home, and the sidebar is split into
+  Overview / Books / Reports / Settings sections.
+
 ## Deploy
 
 ### Option A — Streamlit Community Cloud (free; data does not persist between redeploys)

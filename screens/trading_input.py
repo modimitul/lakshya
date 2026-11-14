@@ -7,7 +7,7 @@ import streamlit as st
 
 from core import state, store
 from core.formatting import inr
-from core.portfolio import entry_from_form, sale_from_form
+from core.portfolio import entry_from_form, sale_from_form, sector_lookup_from_stocks
 from core.metrics import capital_frame, monthly_summary, months_in
 from core.strategies import (
     CHARGE_TYPE,
@@ -143,6 +143,7 @@ else:
     is_charge = trade_type == CHARGE_TYPE
     needs_strike = requires_strike(trade_type) if trade_type != OTHER_TYPE else False
     sells_first = (not is_charge) and trade_type != OTHER_TYPE and opening_side(trade_type) == "sell"
+    is_intraday = trade_type == "Equity Intraday"
 
     with st.form("add_trade", clear_on_submit=True, border=True):
         if is_charge:
@@ -182,6 +183,10 @@ else:
             if sells_first:
                 buy_date = a.date_input("Buy date (optional)", value=None, format="DD-MM-YYYY",
                                         help="Fill when the position is bought back / squared off — or later, from Open positions.")
+            elif is_intraday:
+                sale_date = None
+                a.markdown("**Sale date: same day**")
+                a.caption("Intraday — the sale date is set automatically to the Buy date.")
             else:
                 sale_date = a.date_input("Sale date (optional)", value=None, format="DD-MM-YYYY",
                                          help="Fill when the position is sold / squared off — or later, from Open positions.")
@@ -218,6 +223,8 @@ else:
             for p_ in problems:
                 st.error(p_)
         else:
+            if is_intraday and sale_date is None:
+                sale_date = buy_date       # intraday: bought and sold the same day
             result = trade_from_form(
                 buy_date=buy_date, stock=stock or "BROKERAGE",
                 type=other_type.strip() if trade_type == OTHER_TYPE else trade_type,
@@ -250,8 +257,18 @@ else:
 
 # Open positions / review / delete lists
 if trades is not None and not trades.empty:
+    # Sector lives on each trade row: prefilled from Stocks Management (by stock) where blank,
+    # editable in both grids below and saved with the trades.
+    _sector_lookup = sector_lookup_from_stocks(store.load_frame("_shared", "stocks"))
+    trades = trades.copy()
+    if "sector" not in trades.columns:
+        trades["sector"] = ""
+    if "stock" in trades.columns:
+        _blank = trades["sector"].isna() | (trades["sector"].astype(str).str.strip() == "")
+        trades.loc[_blank, "sector"] = (trades.loc[_blank, "stock"].astype(str).str.strip().str.upper()
+                                        .map(_sector_lookup).fillna(""))
     open_mask = open_positions_mask(trades)
-    editable_cols = [c for c in ("month", "buy_date", "stock", "type", "strike", "qty", "buy", "sale_date", "sell",
+    editable_cols = [c for c in ("month", "buy_date", "stock", "sector", "type", "strike", "qty", "buy", "sale_date", "sell",
                                  "brokerage", "margin", "lot") if c in trades.columns]
     computed_cols = [c for c in ("gross_profit", "roi") if c in trades.columns]
     type_options = sorted(set(strategy_names()) | set(trades["type"].dropna().astype(str))) if "type" in trades.columns else strategy_names()
@@ -265,6 +282,7 @@ if trades is not None and not trades.empty:
                                                  help="Which month this trade counts under. Pick any date in the "
                                                       "right month to move the trade there (saved as that month)."),
             "stock": st.column_config.TextColumn("Stock"),
+            "sector": st.column_config.TextColumn("Sector", help="Editable; new trades prefill it from Stocks Management."),
             "type": st.column_config.SelectboxColumn("Type", options=type_options),
             "strike": st.column_config.NumberColumn("Strike", format="%.0f", step=1),
             "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
@@ -284,7 +302,7 @@ if trades is not None and not trades.empty:
                        "To close a position, fill the missing **Sell** (or **Buy**) price, its **date** and any **Brokerage**, "
                        "then press **Close / save** — the row moves to Trades saved below and starts counting in the Dashboard. "
                        "For an option that expired worthless, enter price **0** with the expiry date.")
-            open_order = trades[open_mask].sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
+            open_order = trades[open_mask].sort_values(["stock", "month", "buy_date"], ascending=[True, False, False], na_position="last").index
             open_grid = trades.loc[open_order, editable_cols + computed_cols].copy()
             open_grid.insert(0, "Remove", False)
             open_edited = st.data_editor(
@@ -292,6 +310,8 @@ if trades is not None and not trades.empty:
                 disabled=["gross_profit", "roi"], key=f"open_positions_{state.version('capital_version')}",
                 column_config=trade_column_config(),
             )
+            _oqty = pd.to_numeric(open_grid.get("qty"), errors="coerce").fillna(0).sum()
+            st.markdown(f"**Grand Total** — {len(open_grid):,} open position(s) · Qty {_oqty:,.0f}")
             o0, o1, _ = st.columns([1, 1, 2])
             if o0.button("Close / save", type="primary", key="open_positions_save"):
                 updated, changed = apply_grid_edits(trades, open_order, open_edited, editable_cols)
@@ -336,12 +356,12 @@ if trades is not None and not trades.empty:
             if fb.button("Show all trades", width="stretch"):
                 st.session_state.pop("tradebook_focus", None)
                 st.rerun()
-        st.caption("Closed trades and charges, most recent month first. Cells are editable: change a cell and "
+        st.caption("Closed trades and charges, latest Buy date first. Cells are editable: change a cell and "
                    "press **Save changes** — P&L, gross profit and ROI are recalculated for the rows you touched. "
                    "Tick **Remove** to delete rows, **To investment** to move a wrongly-entered trade to the "
                    "Investment Book. **Month** is editable too — pick any date in the right month to move a row there. "
                    "Only the computed columns are read-only.")
-        order = shown.sort_values(["month", "buy_date"], ascending=[False, False], na_position="last").index
+        order = shown.sort_values(["buy_date", "month"], ascending=[False, False], na_position="last").index
         grid = trades.loc[order, editable_cols + computed_cols].copy()
         grid.insert(0, "Remove", False)
         grid.insert(1, "To investment", False)
@@ -354,6 +374,10 @@ if trades is not None and not trades.empty:
             disabled=["gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}_{focus_label or 'all'}",
             column_config=cfg,
         )
+        _tgp = pd.to_numeric(grid.get("gross_profit"), errors="coerce").fillna(0).sum()
+        _tbrk = pd.to_numeric(grid.get("brokerage"), errors="coerce").fillna(0).sum()
+        st.markdown(f"**Grand Total** — {len(grid):,} row(s) · Gross profit {inr(_tgp, prefix='₹')} · "
+                    f"Brokerage {inr(_tbrk, prefix='₹')}")
         r0, r1, rM, r2 = st.columns([1, 1, 1.4, 1.6])
         if r0.button("Save changes", type="primary", key="trades_save_edits"):
             updated, changed = apply_grid_edits(trades, order, edited, editable_cols)

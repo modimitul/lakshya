@@ -61,6 +61,19 @@ def filter_table(df: pd.DataFrame | None, key: str, label: str = "Filter",
     return shown
 
 
+def plain_table(df: pd.DataFrame | None, key: str | None = None, height: int | None = None,
+                full_height: bool = False) -> None:
+    """Read-only table without filters. full_height=True sizes it to show every row
+    (no scroll bar); otherwise it caps at ~20 rows and scrolls."""
+    if df is None or df.empty:
+        st.caption("No rows.")
+        return
+    if height is None:
+        rows = len(df) + 1 if full_height else min(len(df) + 1, 20)
+        height = rows * 35 + 3
+    st.dataframe(df, hide_index=True, width="stretch", height=height)
+
+
 # ------------------------------------------------- Excel-style header filters --
 def excel_table(df: pd.DataFrame | None, key: str, height: int | None = None) -> None:
     """Read-only table with Excel-like per-column filters: every column header has a
