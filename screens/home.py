@@ -9,7 +9,64 @@ from core.benchmarks import period_label
 from core.filters import plain_table
 from core.formatting import inr, pct
 from core.metrics import cagr_from_monthly, kpis, monthly_summary, months_in, settled_only, yearly_summary
-from core.portfolio import asset_class_summary, match_sales, with_asset_class
+from core.portfolio import ASSET_CLASSES, asset_class_summary, match_sales, with_asset_class
+
+CLASS_TABLE_TITLES = {"Equity": "Stocks (Equity)", "ETF": "ETF", "Equity MF": "Equity MF",
+                      "Liquid Fund": "Liquid Funds", "Debt": "Debt"}
+
+
+def holdings_by_class_tables(member_frames: dict, key: str) -> None:
+    """One holdings table per asset class — Stocks (Equity), ETF, Equity MF, Liquid Funds, Debt —
+    each sorted by highest investment with a Grand Total row. member_frames maps a column name
+    to that member's classified current holdings; with a single frame the member column is skipped."""
+    member_frames = {n: f for n, f in member_frames.items() if f is not None and not f.empty}
+    if not member_frames:
+        st.info("No current holdings yet.")
+        return
+    classes_present = []
+    for cls in ASSET_CLASSES + sorted({str(c) for f in member_frames.values()
+                                       for c in f["asset_class"].dropna().unique()} - set(ASSET_CLASSES)):
+        if any((f["asset_class"] == cls).any() for f in member_frames.values()) and cls not in classes_present:
+            classes_present.append(cls)
+    single = len(member_frames) == 1
+    for cls in classes_present:
+        title = CLASS_TABLE_TITLES.get(cls, cls)
+        st.markdown(f"**{title}**")
+        stock_cols, stock_sector = {}, {}
+        for name, frame in member_frames.items():
+            part = frame[frame["asset_class"] == cls]
+            if part.empty:
+                continue
+            grp = part.groupby("stock").agg(cost=("cost", "sum"), sector=("sector", "first"))
+            stock_cols[name] = grp["cost"].to_dict()
+            for stk, sec_ in grp["sector"].items():
+                stock_sector.setdefault(stk, str(sec_ or ""))
+        all_stocks = sorted(set().union(*[set(d) for d in stock_cols.values()]))
+        tbl = pd.DataFrame(index=all_stocks)
+        tbl["Sector"] = [stock_sector.get(stk, "") for stk in all_stocks]
+        member_names = list(stock_cols)
+        for name, costs in stock_cols.items():
+            tbl[name] = [costs.get(stk) for stk in all_stocks]
+        total_col = "Invested" if single else "Total invested"
+        tbl[total_col] = tbl[member_names].sum(axis=1, skipna=True)
+        if single:
+            tbl = tbl.drop(columns=member_names) if member_names != [total_col] else tbl
+        grand = float(tbl[total_col].sum())
+        tbl["% of class"] = tbl[total_col] / grand * 100 if grand else pd.NA
+        tbl = tbl.sort_values(total_col, ascending=False)
+        shown = tbl.reset_index().rename(columns={"index": "Stock"})
+        total_row = {c: pd.NA for c in shown.columns}
+        total_row.update({"Stock": "Grand Total", "Sector": "", total_col: grand, "% of class": 100.0 if grand else pd.NA})
+        shown = pd.concat([shown, pd.DataFrame([total_row])], ignore_index=True)
+        for col in shown.columns:
+            if col in ("Stock", "Sector"):
+                continue
+            shown[col] = shown[col].map(
+                lambda v, c=col: (pct(v, 1) + "%") if c == "% of class" and pd.notna(v)
+                else (inr(v) if pd.notna(v) else "—"))
+        plain_table(shown, key=f"{key}_{cls.lower().replace(' ', '_')}",
+                    full_height=len(shown) <= 25)
+
 
 CAP_ORDER = ["Large cap", "Mid cap", "Small cap", "Unclassified"]
 CAP_COLORS = {"Large cap": "#1565C0", "Mid cap": "#42A5F5", "Small cap": "#90CAF9", "Unclassified": "#B0BEC5"}
@@ -135,6 +192,8 @@ if _my_portfolio is not None and not _my_portfolio.empty:
         with mcol2:
             cap_pie_with_table(_my_cls[_my_cls["asset_class"] == "Equity"],
                                key="my_cap_pie", title="Equity by marketcap")
+        st.markdown("**Holdings by asset class** (one table per class, highest investment on top)")
+        holdings_by_class_tables({state.user_name(_me): _my_cls}, key="tbl_my_bystock")
 
 # ------------------------------------------- administrator: family dashboards --
 if state.is_admin():
@@ -221,33 +280,10 @@ if state.is_admin():
                 _donut(class_costs.index, class_costs.values,
                        "Family allocation by asset class (all members)", "family_class_pie")
 
-            # ---- holdings by stock, highest family investment first ----
-            st.markdown("**Investments — holdings by stock** (highest family investment on top)")
-            stock_cols = {}
-            stock_sector = {}
-            for name, frame in member_frames.items():
-                grp = frame.groupby("stock").agg(cost=("cost", "sum"), sector=("sector", "first"))
-                stock_cols[name] = grp["cost"].to_dict()
-                for stk, sec_ in grp["sector"].items():
-                    stock_sector.setdefault(stk, str(sec_ or ""))
-            all_stocks = sorted(set().union(*[set(d) for d in stock_cols.values()]))
-            by_stock = pd.DataFrame(index=all_stocks)
-            by_stock["Sector"] = [stock_sector.get(stk, "") for stk in all_stocks]
-            for name, costs in stock_cols.items():
-                by_stock[name] = [costs.get(stk) for stk in all_stocks]
-            member_names = list(stock_cols)
-            by_stock["Total invested"] = by_stock[member_names].sum(axis=1, skipna=True)
-            grand_stock = float(by_stock["Total invested"].sum())
-            by_stock["% of family"] = by_stock["Total invested"] / grand_stock * 100 if grand_stock else pd.NA
-            by_stock = by_stock.sort_values("Total invested", ascending=False)
-            shown_stocks = by_stock.reset_index().rename(columns={"index": "Stock"})
-            for col in shown_stocks.columns:
-                if col in ("Stock", "Sector"):
-                    continue
-                shown_stocks[col] = shown_stocks[col].map(
-                    lambda v, c=col: (pct(v, 1) + "%") if c == "% of family" and pd.notna(v)
-                    else (inr(v) if pd.notna(v) else "—"))
-            plain_table(shown_stocks, key="tbl_family_bystock")
+            # ---- holdings per asset class, highest family investment first ----
+            st.markdown("**Investments — holdings by asset class** (one table per class, "
+                        "highest family investment on top)")
+            holdings_by_class_tables(member_frames, key="tbl_family_bystock")
 
             # ---- Equity only: how much sits in Large / Mid / Small cap ----
             st.markdown("**Equity by marketcap** (Equity asset class only; caps come from Stocks Management)")

@@ -222,8 +222,8 @@ def test_user_management_and_family_home(monkeypatch):
         if "Asset class" in cols and "% of family" in cols:
             assert "Priya" in cols
             found_alloc = True
-        if "Total invested" in cols:
-            vals = frame.value["Total invested"].str.replace(",", "").astype(float, errors="ignore")
+        if ("Total invested" in cols or "Invested" in cols) and "% of class" in cols:
+            assert frame.value["Stock"].iloc[-1] == "Grand Total"
             found_bystock = True
     assert found_kpis and found_alloc and found_bystock
 
@@ -841,3 +841,69 @@ def test_v31_home_counts_match_dashboard_and_pies_render():
     body = " ".join(str(m.value) for m in at.markdown)
     assert "1 stocks held" in body or any("1 stocks held" in str(w.value) for w in at.markdown), body[:500]
     assert not at.exception
+
+
+def test_v32_co_admin_flag_grants_family_access(monkeypatch):
+    """A user ticked Administrator in User management gets admin access: owner switcher
+    semantics (is_admin true) and the family dashboards on Home."""
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+    from core import store
+    from core.crypto import hash_password
+
+    users = store.add_user(store.load_users(), "Priya")
+    store.save_users(users)
+    store.set_user_fields("priya", password_hash=hash_password("priyapw"),
+                          family=True, admin=True)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at.run()
+    by_label(at.text_input, "Username").set_value("Priya")
+    [w for w in at.text_input if w.label == "Password"][0].set_value("priyapw")
+    by_label(at.button, "Login").click().run()
+    assert at.session_state["signed_in_as"] == "priya"
+    # family dashboards visible to the co-admin
+    assert any("Family dashboards" in str(h.value) for h in at.subheader)
+
+    # un-flagged user does not see them
+    users = store.add_user(store.load_users(), "Rohan")
+    store.save_users(users)
+    store.set_user_fields("rohan", password_hash=hash_password("rohanpw"))
+    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90)
+    at2.run()
+    by_label(at2.text_input, "Username").set_value("Rohan")
+    [w for w in at2.text_input if w.label == "Password"][0].set_value("rohanpw")
+    by_label(at2.button, "Login").click().run()
+    assert at2.session_state["signed_in_as"] == "rohan"
+    assert not any("Family dashboards" in str(h.value) for h in at2.subheader)
+
+
+def test_v32_per_class_holdings_tables():
+    """Home shows one holdings table per asset class (Stocks/ETF/Liquid Funds...), each with
+    a Grand Total row, in the user's own section."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23", "Sep-23"],
+        "SECTORS": ["IT", "ETF", "LIQUID FUND"],
+        "STOCK": ["TCS", "GOLDBEES", "ICICILIQ"],
+        "QTY": [10, 100, 50],
+        "BUY": [3000.0, 60.0, 100.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app()
+    assert not at.exception, [e.value for e in at.exception]
+    titles = [str(m.value) for m in at.markdown]
+    body = " ".join(titles)
+    assert "Stocks (Equity)" in body and "ETF" in body and "Liquid Funds" in body
+    class_tables = [f for f in at.get("dataframe")
+                    if "% of class" in f.value.columns and "Stock" in f.value.columns]
+    assert len(class_tables) >= 3
+    for f in class_tables:
+        assert f.value["Stock"].iloc[-1] == "Grand Total"
+    # the Equity table holds TCS, the ETF table GOLDBEES
+    stocks_per_table = ["|".join(f.value["Stock"]) for f in class_tables]
+    assert any("TCS" in sp and "GOLDBEES" not in sp for sp in stocks_per_table)
+    assert any("GOLDBEES" in sp and "TCS" not in sp for sp in stocks_per_table)

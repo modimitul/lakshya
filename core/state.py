@@ -60,12 +60,17 @@ def refresh_users() -> list[dict]:
 
 
 def is_admin() -> bool:
-    """True for the administrator login, or when the app runs without a password gate."""
+    """True for the administrator login, for any user given the Administrator flag in
+    User management, or when the app runs without a password gate."""
     import os
     from . import ADMIN_SLUG
     if not os.environ.get("APP_PASSWORD", ""):
         return True
-    return st.session_state.get("signed_in_as") == ADMIN_SLUG
+    signed_in = st.session_state.get("signed_in_as")
+    if signed_in == ADMIN_SLUG:
+        return True
+    me = next((u for u in users() if u["slug"] == signed_in), None)
+    return bool(me and me.get("admin"))
 
 
 def current_user() -> str:

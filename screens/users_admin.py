@@ -53,24 +53,34 @@ if not admin:
 else:
     st.subheader("Users")
     st.caption("**Family** marks the owners whose combined Trading and Investment dashboards appear on the "
-               "administrator's Home page. Edit the ticks and press **Save users**.")
+               "administrators' Home pages. **Administrator** gives that user full access to every family "
+               "member's data: the owner switcher, all pages for any owner, the family dashboards and this "
+               "page. Edit the ticks and press **Save users**.")
     grid = pd.DataFrame({
         "Username": [u["name"] for u in users],
         "Family": [bool(u.get("family")) for u in users],
+        "Administrator": [u["slug"] == ADMIN_SLUG or bool(u.get("admin")) for u in users],
         "Has password": ["yes" if u.get("password_hash") else "not set (shared password still accepted)" for u in users],
-        "Administrator": ["yes" if u["slug"] == ADMIN_SLUG else "" for u in users],
     })
     edited = st.data_editor(
         grid, hide_index=True, width="stretch", height=(len(grid) + 1) * 35 + 3,
-        disabled=["Username", "Has password", "Administrator"],
+        disabled=["Username", "Has password"],
         key=f"users_grid_{len(users)}",
-        column_config={"Family": st.column_config.CheckboxColumn("Family",
-                       help="Counted in the family dashboards on the administrator's Home page")},
+        column_config={
+            "Family": st.column_config.CheckboxColumn("Family",
+                      help="Counted in the family dashboards on the administrators' Home pages"),
+            "Administrator": st.column_config.CheckboxColumn("Administrator",
+                             help="Can access all family members' data (owner switcher, family dashboards, "
+                                  "user management). The main administrator cannot be un-ticked."),
+        },
     )
     if st.button("Save users", type="primary"):
-        new_users = [{**u, "family": bool(edited["Family"].iloc[i])} for i, u in enumerate(users)]
+        new_users = [{**u,
+                      "family": bool(edited["Family"].iloc[i]),
+                      "admin": True if u["slug"] == ADMIN_SLUG else bool(edited["Administrator"].iloc[i])}
+                     for i, u in enumerate(users)]
         state.set_users(new_users)
-        st.session_state["users_flash"] = ["Family flags saved."]
+        st.session_state["users_flash"] = ["User flags saved."]
         st.rerun()
 
     st.subheader("Reset a password")

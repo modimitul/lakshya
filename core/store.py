@@ -54,6 +54,7 @@ owners_table = Table(
     Column("position", String(8), nullable=False, default="0"),
     Column("password_hash", Text),
     Column("family", String(1), nullable=False, default="0"),
+    Column("admin", String(1), nullable=False, default="0"),
 )
 frames_enc_table = Table(
     "frames_enc", _metadata,
@@ -95,7 +96,8 @@ def engine() -> Engine:
             for table in FRAME_TABLES:
                 conn.execute(text(f'CREATE TABLE IF NOT EXISTS "{table}" (owner VARCHAR(80))'))
             for ddl in ('ALTER TABLE owners ADD COLUMN password_hash TEXT',
-                        "ALTER TABLE owners ADD COLUMN family VARCHAR(1) DEFAULT '0'"):
+                        "ALTER TABLE owners ADD COLUMN family VARCHAR(1) DEFAULT '0'",
+                        "ALTER TABLE owners ADD COLUMN admin VARCHAR(1) DEFAULT '0'"):
                 try:
                     conn.execute(text(ddl))
                 except Exception:
@@ -114,10 +116,12 @@ def slugify(name: str) -> str:
 def load_users() -> list[dict]:
     with engine().connect() as conn:
         rows = conn.execute(select(owners_table.c.slug, owners_table.c.name, owners_table.c.position,
-                                   owners_table.c.password_hash, owners_table.c.family)).all()
+                                   owners_table.c.password_hash, owners_table.c.family,
+                                   owners_table.c.admin)).all()
     rows.sort(key=lambda r: int(r.position or 0))
     return [{"slug": r.slug, "name": r.name, "password_hash": r.password_hash or "",
-             "family": str(r.family or "0") == "1"} for r in rows]
+             "family": str(r.family or "0") == "1",
+             "admin": str(r.admin or "0") == "1"} for r in rows]
 
 
 def save_users(users: list[dict]) -> None:
@@ -127,7 +131,8 @@ def save_users(users: list[dict]) -> None:
             conn.execute(owners_table.insert(), [
                 {"slug": u["slug"], "name": u["name"], "position": str(i),
                  "password_hash": u.get("password_hash") or "",
-                 "family": "1" if u.get("family") else "0"} for i, u in enumerate(users)
+                 "family": "1" if u.get("family") else "0",
+                 "admin": "1" if u.get("admin") else "0"} for i, u in enumerate(users)
             ])
 
 
@@ -137,7 +142,7 @@ def add_user(users: list[dict], name: str) -> list[dict]:
     taken = {u["slug"] for u in users}
     while slug in taken:
         slug, n = f"{base}-{n}", n + 1
-    return users + [{"slug": slug, "name": name.strip(), "password_hash": "", "family": False}]
+    return users + [{"slug": slug, "name": name.strip(), "password_hash": "", "family": False, "admin": False}]
 
 
 def find_user(users: list[dict], name: str) -> dict | None:

@@ -178,6 +178,14 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.2
+- **Co-administrators** — in User management the **Administrator** column is now a checkbox: tick any
+  user and they get full access to every family member's data (owner switcher, all pages for any owner,
+  family dashboards, user management). The main administrator stays protected.
+- **Home — holdings split by asset class**: the family "holdings by stock" table is now one table per
+  class — Stocks (Equity), ETF, Equity MF, Liquid Funds, Debt — each sorted by highest investment with
+  a Grand Total row; every user's own "Investments" section gets the same per-class tables.
+
 ## What's new in v3.1
 - **Sector editable everywhere** — Trading Book grids now carry a Sector column (prefilled from Stocks
   Management, editable, saved with the trades); in the Investment Book, Sector can be changed in All
