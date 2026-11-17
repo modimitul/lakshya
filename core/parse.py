@@ -22,6 +22,7 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     "month": ["month", "expiry month", "period"],
     "stock": ["stock", "symbol", "scrip", "instrument", "underlying"],
     "strike": ["strike price", "strike"],
+    "expiry": ["expiry date", "expiry", "exp date", "strike expiry", "expiry dt"],
     "type": ["type", "strategy", "trade type"],
     "qty": ["qty", "quantity"],
     "buy": ["buy", "buy price", "entry price", "buy avg"],
@@ -43,7 +44,7 @@ NUMERIC_COLUMNS = [
     "strike", "qty", "buy", "cost_value", "sell", "sale_value", "pl",
     "brokerage", "gross_profit", "margin", "lot", "inv_amount", "roi", "capital",
 ]
-DATE_COLUMNS = ["buy_date", "month", "sale_date"]
+DATE_COLUMNS = ["buy_date", "month", "sale_date", "expiry"]
 
 # Columns shown on the manual-entry grid: canonical -> label the user sees.
 MANUAL_COLUMNS: dict[str, str] = {

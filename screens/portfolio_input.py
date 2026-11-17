@@ -617,7 +617,8 @@ if entries is not None and not entries.empty:
                        "sorted by stock. **Sector is editable** — a change applies to every entry of that stock. "
                        "To close or trim a position, fill **Sell qty** and **Sell price** (and charges if any) on its row and press "
                        "**Record sales / save changes** — a SELL row is added to Entries saved above and the profit booked flows into "
-                       "Dashboard Reports → Investments.")
+                       "Dashboard Reports → Investments. Tick **Remove** and press **Remove selected** to drop a "
+                       "wrongly-held position (its unsold quantity is deleted; sold portions stay).")
             today = dt.date.today()
             ogrid = pd.DataFrame({
                 "stock": open_held["stock"].astype(str),
@@ -631,11 +632,15 @@ if entries is not None and not entries.empty:
             })
             ogrid["avg"] = ogrid["cost"] / ogrid["qty"].where(ogrid["qty"] > 0)
             ogrid = ogrid[["stock", "sector", "qty", "cost", "avg", "sell_qty", "sell_price", "sell_charges", "sale_month"]]
+            ogrid.insert(0, "Remove", False)
             oedited = st.data_editor(
                 ogrid, hide_index=True, width="stretch", height=min(len(ogrid) + 1, 14) * 35 + 3,
                 disabled=["stock", "qty", "cost", "avg"],
                 key=f"open_holdings_{state.version('portfolio_version')}",
                 column_config={
+                    "Remove": st.column_config.CheckboxColumn(
+                        "Remove", help="Tick a wrongly-held position and press 'Remove selected' — the unsold "
+                                       "quantity is dropped (sold portions and their booked profit stay)."),
                     "stock": st.column_config.TextColumn("Stock"),
                     "sector": st.column_config.TextColumn("Sector", help="Editable — saved to every entry of this stock."),
                     "qty": st.column_config.NumberColumn("Qty held", format="%.0f"),
@@ -650,7 +655,41 @@ if entries is not None and not entries.empty:
             st.markdown(f"**Grand Total** — {len(ogrid):,} holding(s) · Qty "
                         f"{pd.to_numeric(ogrid['qty'], errors='coerce').fillna(0).sum():,.0f} · Cost held "
                         f"{inr(pd.to_numeric(ogrid['cost'], errors='coerce').fillna(0).sum(), prefix='₹')}")
-            if st.button("Record sales / save changes", type="primary", key="open_holdings_sell"):
+            ob0, ob1, _ = st.columns([1.6, 1.2, 1.2])
+            if ob1.button("Remove selected", key="open_holdings_remove"):
+                rm_rows = oedited[oedited["Remove"].fillna(False).astype(bool)]
+                if rm_rows.empty:
+                    st.info("Tick **Remove** on at least one row first.")
+                else:
+                    rm_stocks = {str(x).strip().upper() for x in rm_rows["stock"]}
+                    lineage_rem, _ = match_sales(entries, with_lineage=True, method=sale_method)
+                    updated = entries.copy()
+                    drop_idx, trimmed = [], []
+                    for _, lot in lineage_rem.iterrows():
+                        if str(lot["stock"]).strip().upper() not in rm_stocks:
+                            continue
+                        src = lot["src_index"]
+                        sold_q = float(lot["sold_qty"]) if pd.notna(lot["sold_qty"]) else 0.0
+                        sold_c = float(lot["sold_cost"]) if pd.notna(lot["sold_cost"]) else 0.0
+                        if sold_q > 0:
+                            updated.at[src, "qty"] = sold_q      # keep only the sold portion
+                            updated.at[src, "cost"] = sold_c
+                            if "buy" in updated.columns and sold_q > 0:
+                                updated.at[src, "buy"] = sold_c / sold_q
+                            trimmed.append(str(lot["stock"]))
+                        else:
+                            drop_idx.append(src)                 # fully unsold lot: delete it
+                    if drop_idx:
+                        updated = updated.drop(index=drop_idx)
+                    updated = updated.reset_index(drop=True)
+                    save_portfolio(updated if not updated.empty else None,
+                                   state.get_meta().get("portfolio_source", "manual entry"))
+                    msg = [f"Removed the open position(s) of: {', '.join(sorted(rm_stocks))}."]
+                    if trimmed:
+                        msg.append("Partially-sold lots kept their sold portion, so profit already booked is untouched.")
+                    st.session_state["investbook_flash"] = msg
+                    st.rerun()
+            if ob0.button("Record sales / save changes", type="primary", key="open_holdings_sell"):
                 # sector edits first: apply to every entry of that stock
                 sector_fixed = []
                 for pos in range(len(ogrid)):

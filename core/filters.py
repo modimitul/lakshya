@@ -64,14 +64,25 @@ def filter_table(df: pd.DataFrame | None, key: str, label: str = "Filter",
 def plain_table(df: pd.DataFrame | None, key: str | None = None, height: int | None = None,
                 full_height: bool = False) -> None:
     """Read-only table without filters. full_height=True sizes it to show every row
-    (no scroll bar); otherwise it caps at ~20 rows and scrolls."""
+    (no scroll bar); otherwise it caps at ~20 rows and scrolls.
+
+    Rows whose first column says "Grand Total" (or "Total") are pinned: they render as a
+    separate strip right below the table, so sorting any column never moves them."""
     if df is None or df.empty:
         st.caption("No rows.")
         return
+    first = df.iloc[:, 0].astype(str).str.strip()
+    total_mask = first.isin(("Grand Total", "Total"))
+    totals = df[total_mask]
+    body = df[~total_mask] if (total_mask.any() and not total_mask.all()) else df
     if height is None:
-        rows = len(df) + 1 if full_height else min(len(df) + 1, 20)
+        rows = len(body) + 1 if full_height else min(len(body) + 1, 20)
         height = rows * 35 + 3
-    st.dataframe(df, hide_index=True, width="stretch", height=height)
+    st.dataframe(body, hide_index=True, width="stretch", height=height)
+    if not totals.empty and not total_mask.all():
+        st.dataframe(totals, hide_index=True, width="stretch",
+                     height=len(totals) * 35 + 38,
+                     column_config={c: st.column_config.Column(label=" ") for c in totals.columns})
 
 
 # ------------------------------------------------- Excel-style header filters --

@@ -223,7 +223,6 @@ def test_user_management_and_family_home(monkeypatch):
             assert "Priya" in cols
             found_alloc = True
         if ("Total invested" in cols or "Invested" in cols) and "% of class" in cols:
-            assert frame.value["Stock"].iloc[-1] == "Grand Total"
             found_bystock = True
     assert found_kpis and found_alloc and found_bystock
 
@@ -900,10 +899,103 @@ def test_v32_per_class_holdings_tables():
     assert "Stocks (Equity)" in body and "ETF" in body and "Liquid Funds" in body
     class_tables = [f for f in at.get("dataframe")
                     if "% of class" in f.value.columns and "Stock" in f.value.columns]
-    assert len(class_tables) >= 3
-    for f in class_tables:
-        assert f.value["Stock"].iloc[-1] == "Grand Total"
-    # the Equity table holds TCS, the ETF table GOLDBEES
-    stocks_per_table = ["|".join(f.value["Stock"]) for f in class_tables]
+    # each class renders a body table plus a pinned Grand Total strip (sorting never moves it)
+    bodies = [f for f in class_tables if not f.value["Stock"].astype(str).eq("Grand Total").any()]
+    totals = [f for f in class_tables if f.value["Stock"].astype(str).eq("Grand Total").all()]
+    assert len(bodies) >= 3 and len(totals) >= 3
+    stocks_per_table = ["|".join(f.value["Stock"]) for f in bodies]
     assert any("TCS" in sp and "GOLDBEES" not in sp for sp in stocks_per_table)
     assert any("GOLDBEES" in sp and "TCS" not in sp for sp in stocks_per_table)
+
+
+def test_v33_move_open_position_to_investment():
+    """Trading Book: an open position ticked 'To investment' moves to the Investment Book."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.parse import trade_from_form
+
+    res = trade_from_form(buy_date=dt.date(2026, 2, 3), stock="TCS", type="Equity",
+                          qty=10, buy=3000.0, sell=0.0, sale_date=None, brokerage=0.0, lot=1)
+    assert not res.errors
+    store.save_frame("owner", "trades", res.trades)
+
+    at = app("screens/trading_input.py")
+    open_editor = next(e for e in at.get("data_editor") if "To investment" in e.value.columns
+                       and "sell_qty" not in e.value.columns and "Remove" in e.value.columns
+                       and e.key.startswith("open_positions"))
+    at.session_state[open_editor.key] = {"edited_rows": {"0": {"To investment": True}},
+                                         "added_rows": [], "deleted_rows": []}
+    by_label(at.button, "Move to Investment Book").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    port = store.load_frame("owner", "portfolio")
+    assert port is not None and len(port) == 1
+    assert port["stock"].iloc[0] == "TCS" and float(port["cost"].iloc[0]) == 30000.0
+    trades_left = store.load_frame("owner", "trades")
+    assert trades_left is None or trades_left.empty
+
+
+def test_v33_expiry_column_in_form_and_grid():
+    """Option strategies: optional Expiry date saved from the form and editable in the grid."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+
+    at = app("screens/trading_input.py")
+    at.radio[0].set_value("Add trades manually").run()
+    by_label(at.selectbox, "Type").set_value("Naked Put Sell").run()
+    assert [w for w in at.date_input if w.label == "Expiry date (optional)"]
+    by_label(at.text_input, "Stock").set_value("NIFTY")
+    by_label(at.number_input, "Strike price *").set_value(22000)
+    by_label(at.number_input, "Qty").set_value(75)
+    by_label(at.number_input, "Buy price").set_value(100.0)
+    by_label(at.number_input, "Sell price").set_value(50.0)
+    by_label(at.date_input, "Sale date *").set_value(dt.date(2026, 1, 5))
+    by_label(at.date_input, "Buy date (optional)").set_value(dt.date(2026, 1, 20))
+    by_label(at.date_input, "Expiry date (optional)").set_value(dt.date(2026, 1, 29))
+    by_label(at.button, "Add trade").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    saved = store.load_frame("owner", "trades")
+    assert pd.Timestamp(saved["expiry"].iloc[0]).date() == dt.date(2026, 1, 29)
+
+    # grid shows and edits expiry
+    at2 = app("screens/trading_input.py")
+    editor = next(e for e in at2.get("data_editor") if "To investment" in e.value.columns
+                  and e.key.startswith("trade_list"))
+    assert "expiry" in editor.value.columns
+    at2.session_state[editor.key] = {"edited_rows": {"0": {"expiry": "2026-02-26"}},
+                                     "added_rows": [], "deleted_rows": []}
+    by_label(at2.button, "Save changes").click().run()
+    assert not at2.exception, [e.value for e in at2.exception]
+    assert pd.Timestamp(store.load_frame("owner", "trades")["expiry"].iloc[0]).date() == dt.date(2026, 2, 26)
+
+
+def test_v33_remove_open_position_in_investment_book():
+    """Investment Book: ticking Remove on an open position drops the unsold quantity but
+    keeps sold portions (and their booked profit)."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio, sale_from_form
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23"], "SECTORS": ["IT", "PAINTS"],
+        "STOCK": ["TCS", "BERGEPAINT"], "QTY": [10, 20], "BUY": [3000.0, 800.0],
+    })
+    entries = clean_portfolio(raw).entries
+    sale = sale_from_form(pd.Timestamp("2024-01-01").date(), "IT", "TCS", 4, 3500.0, 0.0).entries
+    store.save_frame("owner", "portfolio", pd.concat([entries, sale], ignore_index=True))
+
+    at = app("screens/portfolio_input.py")
+    open_editor = next(e for e in at.get("data_editor") if "sell_qty" in e.value.columns)
+    disp = open_editor.value.reset_index(drop=True)
+    pos_tcs = int(disp.index[disp["stock"] == "TCS"][0])
+    at.session_state[open_editor.key] = {"edited_rows": {str(pos_tcs): {"Remove": True}},
+                                         "added_rows": [], "deleted_rows": []}
+    next(b for b in at.button if b.key == "open_holdings_remove").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    port = store.load_frame("owner", "portfolio")
+    buys = port[port.get("side", "buy").astype(str).str.lower() != "sell"] if "side" in port.columns else port
+    tcs = buys[buys["stock"] == "TCS"]
+    assert len(tcs) == 1 and float(tcs["qty"].iloc[0]) == 4.0      # sold portion kept
+    assert (buys["stock"] == "BERGEPAINT").sum() == 1 and float(
+        buys.loc[buys["stock"] == "BERGEPAINT", "qty"].iloc[0]) == 20.0

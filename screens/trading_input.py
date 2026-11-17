@@ -151,7 +151,7 @@ else:
             buy_date = a.date_input("Date", value=dt.date.today(), format="DD-MM-YYYY")
             stock = b.text_input("Description", value="BROKERAGE", help="e.g. BROKERAGE, DP CHARGES, AMC CHARGES").strip().upper()
             brokerage = c.number_input("Brokerage & other charges (₹)", min_value=0.0, step=1.0, value=0.0, format="%.2f")
-            qty, buy, sell, sale_date, margin, lot, strike = 1, 0.0, 0.0, None, 0, 1, 0.0
+            qty, buy, sell, sale_date, margin, lot, strike, expiry = 1, 0.0, 0.0, None, 0, 1, 0.0, None
         else:
             a, b, c = st.columns(3)
             if sells_first:
@@ -175,6 +175,11 @@ else:
             strike = c.number_input("Strike price" + (" *" if needs_strike else " (optional)"), min_value=0, step=50, value=0,
                                     help=("Required for option strategies. Whole numbers only — strikes have no decimals."
                                           if needs_strike else "Not applicable to this type; leave 0."))
+            expiry = None
+            if needs_strike:
+                a, b, _sp = st.columns([1, 1, 1])
+                expiry = a.date_input("Expiry date (optional)", value=None, format="DD-MM-YYYY",
+                                      help="The option's expiry. Optional — shown next to the strike in the trade grids.")
             a, b, c = st.columns(3)
             qty = a.number_input("Qty", min_value=0, step=1, value=0)
             buy = b.number_input("Buy price", min_value=0.0, step=0.05, value=0.0, format="%.2f")
@@ -229,7 +234,7 @@ else:
                 buy_date=buy_date, stock=stock or "BROKERAGE",
                 type=other_type.strip() if trade_type == OTHER_TYPE else trade_type,
                 strike=strike or None, qty=qty, buy=buy, sale_date=sale_date, sell=sell,
-                brokerage=brokerage, margin=margin or None, lot=lot or None,
+                brokerage=brokerage, margin=margin or None, lot=lot or None, expiry=expiry,
             )
             show_messages(result)
             if result.ok:
@@ -267,8 +272,11 @@ if trades is not None and not trades.empty:
         _blank = trades["sector"].isna() | (trades["sector"].astype(str).str.strip() == "")
         trades.loc[_blank, "sector"] = (trades.loc[_blank, "stock"].astype(str).str.strip().str.upper()
                                         .map(_sector_lookup).fillna(""))
+    if "expiry" not in trades.columns:
+        trades["expiry"] = pd.NaT
+    trades["expiry"] = pd.to_datetime(trades["expiry"], errors="coerce")
     open_mask = open_positions_mask(trades)
-    editable_cols = [c for c in ("month", "buy_date", "stock", "sector", "type", "strike", "qty", "buy", "sale_date", "sell",
+    editable_cols = [c for c in ("month", "buy_date", "stock", "sector", "type", "strike", "expiry", "qty", "buy", "sale_date", "sell",
                                  "brokerage", "margin", "lot") if c in trades.columns]
     computed_cols = [c for c in ("gross_profit", "roi") if c in trades.columns]
     type_options = sorted(set(strategy_names()) | set(trades["type"].dropna().astype(str))) if "type" in trades.columns else strategy_names()
@@ -285,6 +293,8 @@ if trades is not None and not trades.empty:
             "sector": st.column_config.TextColumn("Sector", help="Editable; new trades prefill it from Stocks Management."),
             "type": st.column_config.SelectboxColumn("Type", options=type_options),
             "strike": st.column_config.NumberColumn("Strike", format="%.0f", step=1),
+            "expiry": st.column_config.DateColumn("Expiry", format="DD-MMM-YY",
+                                                  help="Option expiry date (optional)."),
             "qty": st.column_config.NumberColumn("Qty", format="%.0f"),
             "buy": st.column_config.NumberColumn("Buy", format="%.2f"),
             "sell": st.column_config.NumberColumn("Sell", format="%.2f"),
@@ -295,24 +305,97 @@ if trades is not None and not trades.empty:
             "roi": st.column_config.NumberColumn("ROI %", format="%.2f"),
         }
 
+
+    def move_trades_to_investment(move_idx) -> None:
+        """Convert the given trade rows into Investment Book lots (and sales when closed),
+        then remove them from the Trading Book."""
+        problems, new_entries, moved, notes = [], [], [], []
+        for idx in move_idx:
+            row = trades.loc[idx]
+            stock = str(row.get("stock") or "").strip() or "UNKNOWN"
+            kind = str(row.get("entry_kind") or "trade")
+            qty = pd.to_numeric(pd.Series([row.get("qty")]), errors="coerce").iloc[0]
+            buy = pd.to_numeric(pd.Series([row.get("buy")]), errors="coerce").iloc[0]
+            sell = pd.to_numeric(pd.Series([row.get("sell")]), errors="coerce").iloc[0]
+            brokerage = pd.to_numeric(pd.Series([row.get("brokerage")]), errors="coerce").iloc[0]
+            brokerage = 0.0 if pd.isna(brokerage) else float(brokerage)
+            if kind == "charge":
+                problems.append(f"{stock}: a charge entry is not an investment — remove it instead.")
+                continue
+            if pd.isna(qty) or qty <= 0 or pd.isna(buy) or buy <= 0:
+                problems.append(f"{stock}: needs a Qty and a Buy price to become an investment lot. "
+                                "For a sell-opening position, fill the Buy side first.")
+                continue
+            buy_month = row.get("buy_date") if pd.notna(row.get("buy_date")) else row.get("month")
+            if pd.isna(buy_month):
+                problems.append(f"{stock}: has no Buy date or Month to place the purchase in.")
+                continue
+            buy_month = pd.Timestamp(buy_month).to_period("M").to_timestamp().date()
+            res = entry_from_form(buy_month, "EQUITY", stock, float(qty), float(buy))
+            if res.errors or res.entries is None or res.entries.empty:
+                problems.append(f"{stock}: {'; '.join(res.errors) or 'could not convert this row.'}")
+                continue
+            pieces = [res.entries]
+            has_sale = pd.notna(sell) and float(sell) > 0
+            if has_sale:
+                sale_month = row.get("sale_date") if pd.notna(row.get("sale_date")) else row.get("month")
+                sale_month = pd.Timestamp(sale_month).to_period("M").to_timestamp().date()
+                sres = sale_from_form(sale_month, "EQUITY", stock, float(qty), float(sell), brokerage)
+                if sres.errors or sres.entries is None:
+                    problems.append(f"{stock}: purchase converts, but its sale leg failed: {'; '.join(sres.errors)}")
+                    continue
+                pieces.append(sres.entries)
+                notes.append(f"{stock}: moved as a purchase **and** its sale (profit booked lands in the Investments dashboard).")
+            elif brokerage > 0:
+                notes.append(f"{stock}: brokerage ₹{brokerage:,.2f} was not carried over (investment lots store qty × price only).")
+            new_entries.append((idx, pd.concat(pieces, ignore_index=True)))
+            moved.append(stock)
+        if problems:
+            for p_ in problems:
+                st.error(p_)
+            st.warning("Nothing was moved — fix the rows above (or untick them) and try again.")
+            return
+        portfolio = state.get_frame("portfolio")
+        frames = [portfolio] if portfolio is not None and not portfolio.empty else []
+        frames += [e for _, e in new_entries]
+        combined = pd.concat(frames, ignore_index=True)
+        state.put_frame("portfolio", combined)
+        state.put_meta({"portfolio_source": state.get_meta().get("portfolio_source", "") or "moved from Trading Book"})
+        state.bump("portfolio_version")
+        remaining = trades.drop(index=[i for i, _ in new_entries]).reset_index(drop=True)
+        save_trades(remaining if not remaining.empty else None, state.get_frame("excluded"),
+                    state.get_meta().get("trades_source", ""))
+        st.session_state["tradebook_flash"] = (
+            [f"Moved {len(moved)} row(s) to the Investment Book: {', '.join(moved)}. "
+             "They are out of the Trading Book and its dashboard, and now sit under Entries saved."]
+            + notes)
+        st.rerun()
+
     if open_mask.any():
         n_open = int(open_mask.sum())
         with st.expander(f"Open positions for {owner} ({n_open})", expanded=True):
             st.caption("Trades with one leg still missing — they stay out of the dashboards until closed. "
                        "To close a position, fill the missing **Sell** (or **Buy**) price, its **date** and any **Brokerage**, "
                        "then press **Close / save** — the row moves to Trades saved below and starts counting in the Dashboard. "
-                       "For an option that expired worthless, enter price **0** with the expiry date.")
+                       "For an option that expired worthless, enter price **0** with the expiry date. "
+                       "Tick **To investment** on a position that is really a long-term holding and press "
+                       "**Move to Investment Book** — it leaves the Trading Book and lands under Entries saved there.")
             open_order = trades[open_mask].sort_values(["stock", "month", "buy_date"], ascending=[True, False, False], na_position="last").index
             open_grid = trades.loc[open_order, editable_cols + computed_cols].copy()
             open_grid.insert(0, "Remove", False)
+            open_grid.insert(1, "To investment", False)
+            open_cfg = trade_column_config()
+            open_cfg["To investment"] = st.column_config.CheckboxColumn(
+                "To investment", help="Tick positions that are really long-term investments (entered here by "
+                                      "mistake), then press 'Move to Investment Book'. The Buy side must be filled.")
             open_edited = st.data_editor(
                 open_grid, hide_index=True, width="stretch", height=min(len(open_grid) + 1, 10) * 35 + 3,
                 disabled=["gross_profit", "roi"], key=f"open_positions_{state.version('capital_version')}",
-                column_config=trade_column_config(),
+                column_config=open_cfg,
             )
             _oqty = pd.to_numeric(open_grid.get("qty"), errors="coerce").fillna(0).sum()
             st.markdown(f"**Grand Total** — {len(open_grid):,} open position(s) · Qty {_oqty:,.0f}")
-            o0, o1, _ = st.columns([1, 1, 2])
+            o0, o1, oM, _ = st.columns([1, 1, 1.4, 0.6])
             if o0.button("Close / save", type="primary", key="open_positions_save"):
                 updated, changed = apply_grid_edits(trades, open_order, open_edited, editable_cols)
                 if not changed:
@@ -331,6 +414,12 @@ if trades is not None and not trades.empty:
                     remaining = trades.drop(index=open_order[remove_mask]).reset_index(drop=True)
                     save_trades(remaining if not remaining.empty else None, state.get_frame("excluded"), state.get_meta().get("trades_source", ""))
                     st.rerun()
+            if oM.button("Move to Investment Book", key="open_positions_move"):
+                move_mask = open_edited["To investment"].fillna(False).astype(bool).to_numpy()
+                if not move_mask.any():
+                    st.info("Tick **To investment** on at least one row first.")
+                else:
+                    move_trades_to_investment(open_order[move_mask])
 
     settled = trades[~open_mask]
     focus = st.session_state.get("tradebook_focus")
@@ -402,67 +491,7 @@ if trades is not None and not trades.empty:
             if not move_mask.any():
                 st.info("Tick **To investment** on at least one row first.")
             else:
-                move_idx = order[move_mask]
-                problems, new_entries, moved, notes = [], [], [], []
-                for idx in move_idx:
-                    row = trades.loc[idx]
-                    stock = str(row.get("stock") or "").strip() or "UNKNOWN"
-                    kind = str(row.get("entry_kind") or "trade")
-                    qty = pd.to_numeric(pd.Series([row.get("qty")]), errors="coerce").iloc[0]
-                    buy = pd.to_numeric(pd.Series([row.get("buy")]), errors="coerce").iloc[0]
-                    sell = pd.to_numeric(pd.Series([row.get("sell")]), errors="coerce").iloc[0]
-                    brokerage = pd.to_numeric(pd.Series([row.get("brokerage")]), errors="coerce").iloc[0]
-                    brokerage = 0.0 if pd.isna(brokerage) else float(brokerage)
-                    if kind == "charge":
-                        problems.append(f"{stock}: a charge entry is not an investment — remove it instead.")
-                        continue
-                    if pd.isna(qty) or qty <= 0 or pd.isna(buy) or buy <= 0:
-                        problems.append(f"{stock}: needs a Qty and a Buy price to become an investment lot.")
-                        continue
-                    buy_month = row.get("buy_date") if pd.notna(row.get("buy_date")) else row.get("month")
-                    if pd.isna(buy_month):
-                        problems.append(f"{stock}: has no Buy date or Month to place the purchase in.")
-                        continue
-                    buy_month = pd.Timestamp(buy_month).to_period("M").to_timestamp().date()
-                    res = entry_from_form(buy_month, "EQUITY", stock, float(qty), float(buy))
-                    if res.errors or res.entries is None or res.entries.empty:
-                        problems.append(f"{stock}: {'; '.join(res.errors) or 'could not convert this row.'}")
-                        continue
-                    pieces = [res.entries]
-                    has_sale = pd.notna(sell) and float(sell) > 0
-                    if has_sale:
-                        sale_month = row.get("sale_date") if pd.notna(row.get("sale_date")) else row.get("month")
-                        sale_month = pd.Timestamp(sale_month).to_period("M").to_timestamp().date()
-                        sres = sale_from_form(sale_month, "EQUITY", stock, float(qty), float(sell), brokerage)
-                        if sres.errors or sres.entries is None:
-                            problems.append(f"{stock}: purchase converts, but its sale leg failed: {'; '.join(sres.errors)}")
-                            continue
-                        pieces.append(sres.entries)
-                        notes.append(f"{stock}: moved as a purchase **and** its sale (profit booked lands in the Investments dashboard).")
-                    elif brokerage > 0:
-                        notes.append(f"{stock}: brokerage ₹{brokerage:,.2f} was not carried over (investment lots store qty × price only).")
-                    new_entries.append((idx, pd.concat(pieces, ignore_index=True)))
-                    moved.append(stock)
-                if problems:
-                    for p_ in problems:
-                        st.error(p_)
-                    st.warning("Nothing was moved — fix the rows above (or untick them) and try again.")
-                else:
-                    portfolio = state.get_frame("portfolio")
-                    frames = [portfolio] if portfolio is not None and not portfolio.empty else []
-                    frames += [e for _, e in new_entries]
-                    combined = pd.concat(frames, ignore_index=True)
-                    state.put_frame("portfolio", combined)
-                    state.put_meta({"portfolio_source": state.get_meta().get("portfolio_source", "") or "moved from Trading Book"})
-                    state.bump("portfolio_version")
-                    remaining = trades.drop(index=[i for i, _ in new_entries]).reset_index(drop=True)
-                    save_trades(remaining if not remaining.empty else None, state.get_frame("excluded"),
-                                state.get_meta().get("trades_source", ""))
-                    st.session_state["tradebook_flash"] = (
-                        [f"Moved {len(moved)} row(s) to the Investment Book: {', '.join(moved)}. "
-                         "They are out of the Trading Book and its dashboard, and now sit under Entries saved."]
-                        + notes)
-                    st.rerun()
+                move_trades_to_investment(order[move_mask])
         confirm = r2.checkbox("I want to delete every trade for this owner")
         if confirm and r2.button("Delete all trades", type="secondary"):
             save_trades(None, None, "")

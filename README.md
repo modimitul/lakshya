@@ -178,6 +178,16 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.3
+- **Trading Book → Open positions** gets a **To investment** column and a *Move to Investment Book*
+  button, same as Trades saved (the Buy side must be filled first).
+- **Grand Total rows are pinned**: in every report table the total renders as a fixed strip under the
+  table, so sorting any column never moves it.
+- **Option strategies** get an optional **Expiry date** next to the strike — in the manual form, in
+  both trade grids, and from uploads (an `Expiry Date` column is recognised).
+- **Investment Book → Open positions** gets a **Remove** column: ticking a wrongly-held position drops
+  its unsold quantity while sold portions (and profit already booked) stay.
+
 ## What's new in v3.2
 - **Co-administrators** — in User management the **Administrator** column is now a checkbox: tick any
   user and they get full access to every family member's data (owner switcher, all pages for any owner,
