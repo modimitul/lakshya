@@ -6,7 +6,7 @@ import streamlit as st
 
 from core import state
 from core.benchmarks import Z_COLUMN, cagr_table, comparison_table, get_monthly, period_label
-from core.filters import plain_table
+from core.filters import plain_table, stock_month_filter
 from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, cagr_from_monthly, capital_table, kpis, monthly_summary,
                           to_excel_bytes, yearly_summary, yearly_with_total)
@@ -282,7 +282,7 @@ with trading_tab:
                 plain_table(shown_bd, key="tbl_breakdown")
 
             if st.toggle("Show the trade log", key="tgl_tradelog"):
-                log = trades.copy()
+                log = stock_month_filter(trades.copy(), key="rep_tradelog_filter")
                 log["Month"] = log["month"].dt.strftime("%b-%y")
                 lead = [c for c in ("Month", "stock", "type", "strike", "qty", "buy", "buy_date", "sell",
                                     "sale_date", "brokerage", "margin", "lot", "gross_profit", "roi",
@@ -358,7 +358,7 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
         fig.update_layout(title="Top holdings (% of this class)", yaxis_title="%", margin=MARGIN, height=380)
         st.plotly_chart(fig, width="stretch", key=f"{key}_top_bar")
 
-    h_sorted = h.sort_values("Stock", na_position="last")
+    h_sorted = h.sort_values("Cost", ascending=False, na_position="last")
     h_shown = h_sorted
     shown = h_shown.copy()
     shown["Qty"] = shown["Qty"].map(lambda v: inr(v) if pd.notna(v) else "—")
@@ -375,16 +375,16 @@ def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:
     shown = pd.concat([shown, total_row], ignore_index=True)
     plain_table(shown, key=f"tbl_{key}_holdings")
 
-    sec = alloc.copy()
+    sec = alloc.sort_values("Cost", ascending=False, na_position="last").copy()
     sec["Cost"] = sec["Cost"].map(inr)
     sec["% Investment"] = sec["% Investment"].map(pct)
     if st.toggle("Show the sector table", key=f"tgl_{key}_sectors"):
         plain_table(sec, key=f"tbl_{key}_sectors")
     if st.toggle("Show all entries (as uploaded)", key=f"tgl_{key}_entries"):
-        raw_view = view.copy()
+        raw_view = stock_month_filter(view.copy(), key=f"rep_{key}_entries_filter")
+        if "cost" in raw_view.columns:
+            raw_view = raw_view.sort_values("cost", ascending=False, na_position="last")
         raw_view["month"] = raw_view["month"].dt.strftime("%b-%y")
-        if "stock" in raw_view.columns:
-            raw_view = raw_view.sort_values("stock", na_position="last")
         plain_table(raw_view, key=f"tbl_{key}_entries")
     return {f"{heading[:20]} holdings": h, f"{heading[:20]} sectors": alloc}
 
@@ -556,7 +556,7 @@ with invest_tab:
 
             # -- per sale: table, then chart
             st.markdown("**Per sale**")
-            srt = sales_view.sort_values(["stock", "month"], na_position="last")
+            srt = sales_view.sort_values("cost", ascending=False, na_position="last")
             sale_table = pd.DataFrame({
                 "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
                 "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),

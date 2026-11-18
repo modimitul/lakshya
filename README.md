@@ -178,6 +178,16 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.4
+- Investment Book: **SIP plans moved to the bottom** of the page.
+- **Filter by stock and by month** dropdowns on: Trading Book → Open positions and Trades saved,
+  Investment Book → Open positions (filters the buy-month's lots) and All entries,
+  Dashboard → Trading → trade log, and Dashboard → Investments → all entries.
+- Dashboard → Investments: every table is now **sorted by Cost, highest first** (holdings, sector
+  table, all entries, per-sale profit booked).
+- Home: the **Stocks (Equity) and ETF** class tables gained a **Buy price** column
+  (invested ÷ quantity still held).
+
 ## What's new in v3.3
 - **Trading Book → Open positions** gets a **To investment** column and a *Move to Investment Book*
   button, same as Trades saved (the Buy side must be filled first).

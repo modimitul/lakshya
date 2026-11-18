@@ -32,13 +32,15 @@ def holdings_by_class_tables(member_frames: dict, key: str) -> None:
     for cls in classes_present:
         title = CLASS_TABLE_TITLES.get(cls, cls)
         st.markdown(f"**{title}**")
-        stock_cols, stock_sector = {}, {}
+        stock_cols, stock_sector, stock_qty = {}, {}, {}
         for name, frame in member_frames.items():
             part = frame[frame["asset_class"] == cls]
             if part.empty:
                 continue
-            grp = part.groupby("stock").agg(cost=("cost", "sum"), sector=("sector", "first"))
+            grp = part.groupby("stock").agg(cost=("cost", "sum"), qty=("qty", "sum"), sector=("sector", "first"))
             stock_cols[name] = grp["cost"].to_dict()
+            for stk, q in grp["qty"].items():
+                stock_qty[stk] = stock_qty.get(stk, 0.0) + (float(q) if pd.notna(q) else 0.0)
             for stk, sec_ in grp["sector"].items():
                 stock_sector.setdefault(stk, str(sec_ or ""))
         all_stocks = sorted(set().union(*[set(d) for d in stock_cols.values()]))
@@ -49,6 +51,10 @@ def holdings_by_class_tables(member_frames: dict, key: str) -> None:
             tbl[name] = [costs.get(stk) for stk in all_stocks]
         total_col = "Invested" if single else "Total invested"
         tbl[total_col] = tbl[member_names].sum(axis=1, skipna=True)
+        if cls in ("Equity", "ETF"):
+            # average buy price of what is still held = invested ÷ quantity held
+            _qty = pd.Series({stk: stock_qty.get(stk) for stk in all_stocks})
+            tbl.insert(1, "Buy price", (tbl[total_col] / _qty.where(_qty > 0)).round(2))
         if single:
             tbl = tbl.drop(columns=member_names) if member_names != [total_col] else tbl
         grand = float(tbl[total_col].sum())
@@ -57,13 +63,15 @@ def holdings_by_class_tables(member_frames: dict, key: str) -> None:
         shown = tbl.reset_index().rename(columns={"index": "Stock"})
         total_row = {c: pd.NA for c in shown.columns}
         total_row.update({"Stock": "Grand Total", "Sector": "", total_col: grand, "% of class": 100.0 if grand else pd.NA})
+        if "Buy price" in shown.columns:
+            total_row["Buy price"] = pd.NA
         shown = pd.concat([shown, pd.DataFrame([total_row])], ignore_index=True)
         for col in shown.columns:
             if col in ("Stock", "Sector"):
                 continue
             shown[col] = shown[col].map(
                 lambda v, c=col: (pct(v, 1) + "%") if c == "% of class" and pd.notna(v)
-                else (inr(v) if pd.notna(v) else "—"))
+                else ((inr(v, 2) if c == "Buy price" else inr(v)) if pd.notna(v) else "—"))
         plain_table(shown, key=f"{key}_{cls.lower().replace(' ', '_')}",
                     full_height=len(shown) <= 25)
 

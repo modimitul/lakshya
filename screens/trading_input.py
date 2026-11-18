@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from core import state, store
+from core.filters import stock_month_filter
 from core.formatting import inr
 from core.portfolio import entry_from_form, sale_from_form, sector_lookup_from_stocks
 from core.metrics import capital_frame, monthly_summary, months_in
@@ -380,7 +381,8 @@ if trades is not None and not trades.empty:
                        "For an option that expired worthless, enter price **0** with the expiry date. "
                        "Tick **To investment** on a position that is really a long-term holding and press "
                        "**Move to Investment Book** — it leaves the Trading Book and lands under Entries saved there.")
-            open_order = trades[open_mask].sort_values(["stock", "month", "buy_date"], ascending=[True, False, False], na_position="last").index
+            open_pool = stock_month_filter(trades[open_mask], key="tb_open_filter")
+            open_order = open_pool.sort_values(["stock", "month", "buy_date"], ascending=[True, False, False], na_position="last").index
             open_grid = trades.loc[open_order, editable_cols + computed_cols].copy()
             open_grid.insert(0, "Remove", False)
             open_grid.insert(1, "To investment", False)
@@ -390,7 +392,7 @@ if trades is not None and not trades.empty:
                                       "mistake), then press 'Move to Investment Book'. The Buy side must be filled.")
             open_edited = st.data_editor(
                 open_grid, hide_index=True, width="stretch", height=min(len(open_grid) + 1, 10) * 35 + 3,
-                disabled=["gross_profit", "roi"], key=f"open_positions_{state.version('capital_version')}",
+                disabled=["gross_profit", "roi"], key=f"open_positions_{state.version('capital_version')}_{len(open_order)}_{hash(tuple(open_order)) & 0xffff}",
                 column_config=open_cfg,
             )
             _oqty = pd.to_numeric(open_grid.get("qty"), errors="coerce").fillna(0).sum()
@@ -450,6 +452,7 @@ if trades is not None and not trades.empty:
                    "Tick **Remove** to delete rows, **To investment** to move a wrongly-entered trade to the "
                    "Investment Book. **Month** is editable too — pick any date in the right month to move a row there. "
                    "Only the computed columns are read-only.")
+        shown = stock_month_filter(shown, key="tb_saved_filter")
         order = shown.sort_values(["buy_date", "month"], ascending=[False, False], na_position="last").index
         grid = trades.loc[order, editable_cols + computed_cols].copy()
         grid.insert(0, "Remove", False)
@@ -460,7 +463,7 @@ if trades is not None and not trades.empty:
                                   "then press 'Move to Investment Book'.")
         edited = st.data_editor(
             grid, hide_index=True, width="stretch", height=min(len(grid) + 1, 14) * 35 + 3,
-            disabled=["gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}_{focus_label or 'all'}",
+            disabled=["gross_profit", "roi"], key=f"trade_list_{state.version('capital_version')}_{focus_label or 'all'}_{len(order)}_{hash(tuple(order)) & 0xffff}",
             column_config=cfg,
         )
         _tgp = pd.to_numeric(grid.get("gross_profit"), errors="coerce").fillna(0).sum()

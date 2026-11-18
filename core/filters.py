@@ -61,6 +61,28 @@ def filter_table(df: pd.DataFrame | None, key: str, label: str = "Filter",
     return shown
 
 
+def stock_month_filter(df: pd.DataFrame | None, key: str, stock_col: str = "stock",
+                       month_col: str = "month") -> pd.DataFrame | None:
+    """Two dropdowns — Filter by stock, Filter by month — above a table; returns the rows
+    that match. Months come from month_col formatted as Jan-26, newest first."""
+    if df is None or df.empty:
+        return df
+    c1, c2, _ = st.columns([1.2, 1, 1.8])
+    out = df
+    if stock_col in df.columns:
+        stocks = sorted(df[stock_col].dropna().astype(str).str.strip().str.upper().unique())
+        pick = c1.selectbox("Filter by stock", ["All stocks"] + stocks, key=f"{key}_stock")
+        if pick != "All stocks":
+            out = out[out[stock_col].astype(str).str.strip().str.upper() == pick]
+    if month_col in df.columns:
+        periods = pd.to_datetime(df[month_col], errors="coerce").dropna().dt.to_period("M").unique()
+        labels = [p.strftime("%b-%y") for p in sorted(periods, reverse=True)]
+        pick_m = c2.selectbox("Filter by month", ["All months"] + labels, key=f"{key}_month")
+        if pick_m != "All months":
+            out = out[pd.to_datetime(out[month_col], errors="coerce").dt.strftime("%b-%y") == pick_m]
+    return out
+
+
 def plain_table(df: pd.DataFrame | None, key: str | None = None, height: int | None = None,
                 full_height: bool = False) -> None:
     """Read-only table without filters. full_height=True sizes it to show every row

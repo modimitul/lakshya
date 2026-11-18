@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from core import state, store
+from core.filters import stock_month_filter
 from core.formatting import inr
 from core.parse import apply_grid_edits, cell_changed
 from core.sips import SIP_SOURCE, empty_sips, next_due, normalise_sips, run_autopost
@@ -303,42 +304,6 @@ else:
                     state.bump("stocks_version")
                     st.caption(f"“{stock}” was added to the stock list (menu → Stocks Management).")
 
-# ------------------------------------------------------------- SIP plans ----
-sips = normalise_sips(state.get_frame("sips"))
-n_active = int((sips["active"] > 0).sum()) if not sips.empty else 0
-with st.expander(f"SIP plans — auto-post monthly instalments ({n_active} active)", expanded=False):
-    st.caption("Each **active** plan posts one BUY row per month (Cost = amount, sector as set, Qty left blank since the "
-               "NAV isn't known here) on its instalment day; months missed while the app was closed are posted on the next "
-               "visit. Posted rows carry the marker `SIP` and can be edited like any entry. Add rows with the + below.")
-    sip_grid = sips.copy()
-    sip_grid["active"] = sip_grid["active"] > 0
-    sip_grid["next_due"] = [str(next_due(r) or "—") for _, r in normalise_sips(sips).iterrows()] if not sips.empty else []
-    sip_sector_options = sorted(set(COMMON_SECTORS) | set(sips["sector"].dropna().astype(str)))
-    edited_sips = st.data_editor(
-        sip_grid, hide_index=True, width="stretch", num_rows="dynamic",
-        key=f"sip_grid_{state.version('sips_version')}",
-        column_config={
-            "fund": st.column_config.TextColumn("Fund", required=True, help="e.g. PARAG PARIKH FLEXI CAP FUND"),
-            "sector": st.column_config.SelectboxColumn("Sector", options=sip_sector_options, default="MUTUAL FUND"),
-            "amount": st.column_config.NumberColumn("Amount (₹/instalment)", min_value=0, step=500, format="%.0f"),
-            "day": st.column_config.NumberColumn("Day of month", min_value=1, max_value=31, step=1, format="%.0f"),
-            "start_month": st.column_config.DateColumn("Start month", format="MMM YY"),
-            "active": st.column_config.CheckboxColumn("Active"),
-            "last_applied": st.column_config.DateColumn("Last posted", format="MMM YY", disabled=True),
-            "next_due": st.column_config.TextColumn("Next instalment", disabled=True),
-        },
-    )
-    if st.button("Save SIP plans", type="primary", key="sips_save"):
-        cleaned = normalise_sips(edited_sips.drop(columns=["next_due"], errors="ignore"))
-        bad = cleaned[(cleaned["amount"].isna()) | (cleaned["amount"] <= 0)]
-        if not bad.empty:
-            st.error("Every plan needs an amount greater than 0.")
-        else:
-            state.put_frame("sips", cleaned if not cleaned.empty else None)
-            state.bump("sips_version")
-            st.success(f"Saved {len(cleaned)} SIP plan(s). Due instalments post automatically on the next page load.")
-            st.rerun()
-
 if entries is not None and not entries.empty:
     n_sells = int((entries["side"] == "sell").sum()) if "side" in entries else 0
     n_buys = len(entries) - n_sells
@@ -446,10 +411,15 @@ if entries is not None and not entries.empty:
 
             _buy_rows = entries[buys_mask_all]
             _stock_choices = sorted(_buy_rows["stock"].dropna().astype(str).str.strip().str.upper().unique()) if "stock" in _buy_rows else []
-            _f1, _ = st.columns([1.4, 2.6])
+            _f1, _f2, _ = st.columns([1.4, 1.1, 1.5])
             stock_filter = _f1.selectbox("Filter by stock", ["All stocks"] + _stock_choices, key="pf_entries_stock_filter")
             if stock_filter != "All stocks":
                 _buy_rows = _buy_rows[_buy_rows["stock"].astype(str).str.strip().str.upper() == stock_filter]
+            _periods = pd.to_datetime(_buy_rows["month"], errors="coerce").dropna().dt.to_period("M").unique() if "month" in _buy_rows else []
+            _month_labels = [per.strftime("%b-%y") for per in sorted(_periods, reverse=True)]
+            month_filter = _f2.selectbox("Filter by month", ["All months"] + _month_labels, key="pf_entries_month_filter")
+            if month_filter != "All months":
+                _buy_rows = _buy_rows[pd.to_datetime(_buy_rows["month"], errors="coerce").dt.strftime("%b-%y") == month_filter]
             order_all = _buy_rows.sort_values(["stock", "month"], ascending=[True, False], na_position="last").index
             editable_cols = [c for c in ("month", "sector", "stock", "qty", "buy", "charges", "gift") if c in entries.columns]
             base = entries.loc[order_all, editable_cols].copy()
@@ -614,12 +584,18 @@ if entries is not None and not entries.empty:
     if not open_held.empty:
         with st.expander(f"Open positions for {owner} ({len(open_held):,} holdings)", expanded=False):
             st.caption(f"Everything still held (purchases minus {sale_method.upper()}-matched sales), one row per stock, "
-                       "sorted by stock. **Sector is editable** — a change applies to every entry of that stock. "
+                       "sorted by stock; filter by stock or buy month below (the month view shows just that "
+                       "month's lots). **Sector is editable** — a change applies to every entry of that stock. "
                        "To close or trim a position, fill **Sell qty** and **Sell price** (and charges if any) on its row and press "
                        "**Record sales / save changes** — a SELL row is added to Entries saved above and the profit booked flows into "
                        "Dashboard Reports → Investments. Tick **Remove** and press **Remove selected** to drop a "
                        "wrongly-held position (its unsold quantity is deleted; sold portions stay).")
             today = dt.date.today()
+            _pool = stock_month_filter(open_remaining, key="ib_open_filter")
+            open_held = (_pool.groupby("stock")
+                         .agg(sector=("sector", "first"), qty=("qty", "sum"), cost=("cost", "sum"))
+                         .reset_index()) if not _pool.empty else pd.DataFrame(columns=["stock", "sector", "qty", "cost"])
+            open_held = open_held[pd.to_numeric(open_held["qty"], errors="coerce").fillna(0) > 0]
             ogrid = pd.DataFrame({
                 "stock": open_held["stock"].astype(str),
                 "sector": open_held["sector"].astype(str),
@@ -636,7 +612,7 @@ if entries is not None and not entries.empty:
             oedited = st.data_editor(
                 ogrid, hide_index=True, width="stretch", height=min(len(ogrid) + 1, 14) * 35 + 3,
                 disabled=["stock", "qty", "cost", "avg"],
-                key=f"open_holdings_{state.version('portfolio_version')}",
+                key=f"open_holdings_{state.version('portfolio_version')}_{len(ogrid)}_{hash(tuple(ogrid['stock'])) & 0xffff}",
                 column_config={
                     "Remove": st.column_config.CheckboxColumn(
                         "Remove", help="Tick a wrongly-held position and press 'Remove selected' — the unsold "
@@ -746,3 +722,40 @@ else:
     st.info("No holdings yet for this owner. Upload a file or add entries with the form.")
 
 st.page_link("screens/reports.py", label="Go to Dashboard Reports", icon="📊")
+
+
+# ------------------------------------------------------------- SIP plans ----
+sips = normalise_sips(state.get_frame("sips"))
+n_active = int((sips["active"] > 0).sum()) if not sips.empty else 0
+with st.expander(f"SIP plans — auto-post monthly instalments ({n_active} active)", expanded=False):
+    st.caption("Each **active** plan posts one BUY row per month (Cost = amount, sector as set, Qty left blank since the "
+               "NAV isn't known here) on its instalment day; months missed while the app was closed are posted on the next "
+               "visit. Posted rows carry the marker `SIP` and can be edited like any entry. Add rows with the + below.")
+    sip_grid = sips.copy()
+    sip_grid["active"] = sip_grid["active"] > 0
+    sip_grid["next_due"] = [str(next_due(r) or "—") for _, r in normalise_sips(sips).iterrows()] if not sips.empty else []
+    sip_sector_options = sorted(set(COMMON_SECTORS) | set(sips["sector"].dropna().astype(str)))
+    edited_sips = st.data_editor(
+        sip_grid, hide_index=True, width="stretch", num_rows="dynamic",
+        key=f"sip_grid_{state.version('sips_version')}",
+        column_config={
+            "fund": st.column_config.TextColumn("Fund", required=True, help="e.g. PARAG PARIKH FLEXI CAP FUND"),
+            "sector": st.column_config.SelectboxColumn("Sector", options=sip_sector_options, default="MUTUAL FUND"),
+            "amount": st.column_config.NumberColumn("Amount (₹/instalment)", min_value=0, step=500, format="%.0f"),
+            "day": st.column_config.NumberColumn("Day of month", min_value=1, max_value=31, step=1, format="%.0f"),
+            "start_month": st.column_config.DateColumn("Start month", format="MMM YY"),
+            "active": st.column_config.CheckboxColumn("Active"),
+            "last_applied": st.column_config.DateColumn("Last posted", format="MMM YY", disabled=True),
+            "next_due": st.column_config.TextColumn("Next instalment", disabled=True),
+        },
+    )
+    if st.button("Save SIP plans", type="primary", key="sips_save"):
+        cleaned = normalise_sips(edited_sips.drop(columns=["next_due"], errors="ignore"))
+        bad = cleaned[(cleaned["amount"].isna()) | (cleaned["amount"] <= 0)]
+        if not bad.empty:
+            st.error("Every plan needs an amount greater than 0.")
+        else:
+            state.put_frame("sips", cleaned if not cleaned.empty else None)
+            state.bump("sips_version")
+            st.success(f"Saved {len(cleaned)} SIP plan(s). Due instalments post automatically on the next page load.")
+            st.rerun()

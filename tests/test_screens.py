@@ -999,3 +999,98 @@ def test_v33_remove_open_position_in_investment_book():
     assert len(tcs) == 1 and float(tcs["qty"].iloc[0]) == 4.0      # sold portion kept
     assert (buys["stock"] == "BERGEPAINT").sum() == 1 and float(
         buys.loc[buys["stock"] == "BERGEPAINT", "qty"].iloc[0]) == 20.0
+
+
+def test_v34_sip_at_bottom_and_book_filters():
+    """Investment Book: SIP plans renders last; Open positions and All entries have stock +
+    month filters. Trading Book grids get the same filters."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.parse import trade_from_form
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23"], "SECTORS": ["IT", "PAINTS"],
+        "STOCK": ["TCS", "BERGEPAINT"], "QTY": [10, 20], "BUY": [3000.0, 800.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app("screens/portfolio_input.py")
+    labels = [ex.label for ex in at.expander]
+    i_sip = next(i for i, l in enumerate(labels) if l.startswith("SIP plans"))
+    assert i_sip == len(labels) - 1, labels          # SIP plans is the last expander
+
+    # month filter narrows All entries
+    by_label(at.selectbox, "Filter by month", 0).set_value("Jul-23").run()
+    assert not at.exception, [e.value for e in at.exception]
+    editor = next(e for e in at.get("data_editor") if "sale_date" in e.value.columns)
+    assert editor.value["stock"].tolist() == ["TCS"]
+
+    # Trading Book: trades saved month filter
+    res = trade_from_form(buy_date=dt.date(2026, 1, 5), stock="NIFTY", type="Equity",
+                          qty=1, buy=100.0, sell=110.0, sale_date=dt.date(2026, 1, 6), brokerage=0.0, lot=1)
+    res2 = trade_from_form(buy_date=dt.date(2026, 2, 3), stock="TITAN", type="Equity",
+                           qty=1, buy=200.0, sell=220.0, sale_date=dt.date(2026, 2, 4), brokerage=0.0, lot=1)
+    store.save_frame("owner", "trades", pd.concat([res.trades, res2.trades], ignore_index=True))
+    at2 = app("screens/trading_input.py")
+    by_label(at2.selectbox, "Filter by stock", 0).set_value("NIFTY").run()
+    assert not at2.exception, [e.value for e in at2.exception]
+    grid = next(e for e in at2.get("data_editor") if "To investment" in e.value.columns
+                and e.key.startswith("trade_list"))
+    assert grid.value["stock"].tolist() == ["NIFTY"]
+
+
+def test_v34_dashboard_cost_sort_and_filters():
+    """Dashboard → Investments: holdings sorted by Cost desc; all-entries toggle has filters.
+    Dashboard → Trading: trade log has stock/month filters."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23", "Sep-23"], "SECTORS": ["IT", "PAINTS", "ETF"],
+        "STOCK": ["TCS", "BERGEPAINT", "GOLDBEES"], "QTY": [10, 100, 100], "BUY": [3000.0, 800.0, 60.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app("screens/reports.py")
+    # holdings table (Equity class): first data row is the costliest stock
+    frames = [f for f in at.get("dataframe") if "% Investment" in f.value.columns and "Stock" in f.value.columns]
+    eq = next(f for f in frames if "BERGEPAINT" in set(f.value["Stock"]))
+    rows = [r for r in eq.value["Stock"].tolist() if r != "Grand Total"]
+    assert rows[0] == "BERGEPAINT"          # 80,000 > 30,000
+
+    # all entries toggle: filters appear
+    tgl = next(t for t in at.toggle if t.key == "tgl_equity_entries")
+    tgl.set_value(True).run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(w.label == "Filter by stock" for w in at.selectbox)
+    assert any(w.label == "Filter by month" for w in at.selectbox)
+
+
+def test_v34_home_buy_price_for_equity_and_etf():
+    """Home class tables: Buy price shows for Stocks (Equity) and ETF, not for other classes."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23", "Sep-23"], "SECTORS": ["IT", "ETF", "LIQUID FUND"],
+        "STOCK": ["TCS", "GOLDBEES", "ICICILIQ"], "QTY": [10, 100, 50], "BUY": [3000.0, 60.0, 100.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app()
+    assert not at.exception, [e.value for e in at.exception]
+    tables = [f for f in at.get("dataframe") if "% of class" in f.value.columns]
+    with_bp = [f for f in tables if "Buy price" in f.value.columns
+               and not f.value["Stock"].astype(str).eq("Grand Total").all()]
+    without_bp = [f for f in tables if "Buy price" not in f.value.columns
+                  and not f.value["Stock"].astype(str).eq("Grand Total").all()]
+    stocks_bp = {s for f in with_bp for s in f.value["Stock"]}
+    assert {"TCS", "GOLDBEES"} <= stocks_bp            # Equity + ETF have Buy price
+    assert any("ICICILIQ" in set(f.value["Stock"]) for f in without_bp)   # Liquid Fund doesn't
+    tcs_tbl = next(f for f in with_bp if "TCS" in set(f.value["Stock"]))
+    bp = tcs_tbl.value.loc[tcs_tbl.value["Stock"] == "TCS", "Buy price"].iloc[0]
+    assert "3,000" in str(bp)
