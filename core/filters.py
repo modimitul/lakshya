@@ -100,11 +100,21 @@ def plain_table(df: pd.DataFrame | None, key: str | None = None, height: int | N
     if height is None:
         rows = len(body) + 1 if full_height else min(len(body) + 1, 20)
         height = rows * 35 + 3
-    st.dataframe(body, hide_index=True, width="stretch", height=height)
-    if not totals.empty and not total_mask.all():
-        st.dataframe(totals, hide_index=True, width="stretch",
-                     height=len(totals) * 35 + 38,
-                     column_config={c: st.column_config.Column(label=" ") for c in totals.columns})
+    if totals.empty or total_mask.all():
+        st.dataframe(body, hide_index=True, width="stretch", height=height)
+        return
+    # Pinned total strip: identical pixel widths on both tables keep every column aligned,
+    # and gap=None glues the strip to the table.
+    def _px(col: str) -> int:
+        longest = max([len(str(col))] + [len(str(v)) for v in df[col]])
+        return min(max(72, 26 + 9 * longest), 300)
+    widths = {c: _px(c) for c in df.columns}
+    body_cfg = {c: st.column_config.Column(width=widths[c]) for c in df.columns}
+    tot_cfg = {c: st.column_config.Column(label=" ", width=widths[c]) for c in df.columns}
+    with st.container(gap=None):
+        st.dataframe(body, hide_index=True, width="stretch", height=height, column_config=body_cfg)
+        st.dataframe(totals, hide_index=True, width="stretch", height=len(totals) * 35 + 38,
+                     column_config=tot_cfg)
 
 
 # ------------------------------------------------- Excel-style header filters --

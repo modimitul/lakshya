@@ -21,7 +21,9 @@ st.caption(f"Portfolio owner: **{owner}**")
 GREEN, RED, BLUE = "#2E7D32", "#C62828", "#1F4E79"
 MARGIN = dict(t=50, b=20, l=10, r=10)
 
-trading_tab, invest_tab = st.tabs(["Trading", "Investments"])
+trading_tab, monthly_tab, invest_tab = st.tabs(
+    ["Yearly Trading Performance", "Trading Monthly performance", "Investments"])
+_monthly_ready = False
 
 
 def bar_signed(x, y, title, text=None, height=360, yaxis="₹"):
@@ -104,6 +106,7 @@ with trading_tab:
                        + (f" + {k['charges']:,} charge entries" if k.get("charges") else "") + f" · {k['months']} months"
                        + (f" · {', '.join(str(y) for y in year_pick)}" if year_pick else ""))
 
+            _monthly_ready = True
             kpi_yearly = yearly_summary(summary, basis)
             avg_yearly_roi = pd.to_numeric(kpi_yearly["Yearly ROI"], errors="coerce").mean() if not kpi_yearly.empty else None
             if avg_yearly_roi is not None and pd.isna(avg_yearly_roi):
@@ -221,50 +224,6 @@ with trading_tab:
                            + "Total return sums the months; CAGR compounds them and annualises by 12 ÷ months (so a part-year is scaled to a full year). "
                            "Benchmark months are maintained on the Benchmarks screen.")
 
-            # ------------------------------------- monthly (period selector, charts, table)
-            st.subheader("Monthly performance")
-            month_periods = list(pd.Series(period_label(summary["month"], basis).values, index=summary["month"].values)
-                                 .dropna().groupby(level=0).first().sort_index().unique())
-            default_period = month_periods[-1:] if month_periods else []
-            m_pick = st.multiselect("Months to show", month_periods, default=default_period, key=f"monthly_periods_{basis}",
-                                    placeholder="All months", help="Pick one or more years to keep the monthly table short.")
-            msel = summary[period_label(summary["month"], basis).isin(m_pick).values] if m_pick else summary
-            mk = kpis(msel, trades[period_label(trades["month"], basis).isin(m_pick).values] if m_pick else trades) if not msel.empty else {}
-            left, right = st.columns(2)
-            with left:
-                st.plotly_chart(bar_signed(msel["Month"], msel["Net Profit"], "Net profit by month", text=msel["Net Profit"].map(inr)),
-                                width="stretch", key="monthly_profit_chart")
-            with right:
-                roi = msel.dropna(subset=["Monthly ROI"])
-                fig = go.Figure(go.Scatter(x=roi["Month"], y=roi["Monthly ROI"], mode="lines+markers",
-                                           line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
-                fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
-                if roi.empty:
-                    fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
-                st.plotly_chart(fig, width="stretch", key="monthly_roi_chart")
-            if st.toggle(f"Show the monthly table ({len(msel)} months)", key="tgl_monthly"):
-                monthly_table = monthly_table_frame(msel, mk)
-                plain_table(monthly_table, key="tbl_monthly")
-                st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
-
-            # --------------------------------------- capital & charges (chart, then tables)
-            st.subheader("Capital and charges")
-            brk = pd.to_numeric(msel["Brokerage"], errors="coerce").fillna(0)
-            fig = go.Figure(go.Bar(x=msel["Month"], y=brk, marker_color=BLUE, text=brk.map(inr), textposition="outside",
-                                   hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
-            fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=340)
-            st.plotly_chart(fig, width="stretch", key="brokerage_chart")
-            if st.toggle(f"Show the capital and brokerage tables ({len(msel)} months)", key="tgl_capbrk"):
-                p1, p2 = st.columns(2)
-                cap_t = capital_table(msel)
-                cap_t["Average of Capital"] = cap_t["Average of Capital"].map(inr)
-                brk_t = brokerage_table(msel)
-                brk_t["Brokerage"] = brk_t["Brokerage"].map(inr)
-                with p1:
-                    plain_table(cap_t, key="tbl_capital")
-                with p2:
-                    plain_table(brk_t, key="tbl_brokerage")
-
             # ------------------------------------------------------ breakdown (chart, then table)
             dimensions = [c for c in ("stock", "type") if c in trades]
             if dimensions:
@@ -328,6 +287,59 @@ with trading_tab:
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
             d2.download_button("Download monthly summary (CSV)", summary.drop(columns=["month"]).to_csv(index=False).encode(),
                                "monthly_summary.csv", "text/csv")
+
+
+with monthly_tab:
+    if not _monthly_ready:
+        st.info("Monthly figures appear once settled trades are loaded for this owner "
+                "(year basis and Year filter are set on the Yearly Trading Performance tab).")
+    else:
+        st.caption(f"Source: {meta.get('trades_source', 'manual entry')} · settled trades only"
+                   + (f" · years: {', '.join(str(y) for y in year_pick)}" if year_pick else "")
+                   + (" · financial years (Apr–Mar)" if basis == "financial" else ""))
+        # ------------------------------------- monthly (period selector, charts, table)
+        st.subheader("Monthly performance")
+        month_periods = list(pd.Series(period_label(summary["month"], basis).values, index=summary["month"].values)
+                             .dropna().groupby(level=0).first().sort_index().unique())
+        default_period = month_periods[-1:] if month_periods else []
+        m_pick = st.multiselect("Months to show", month_periods, default=default_period, key=f"monthly_periods_{basis}",
+                                placeholder="All months", help="Pick one or more years to keep the monthly table short.")
+        msel = summary[period_label(summary["month"], basis).isin(m_pick).values] if m_pick else summary
+        mk = kpis(msel, trades[period_label(trades["month"], basis).isin(m_pick).values] if m_pick else trades) if not msel.empty else {}
+        left, right = st.columns(2)
+        with left:
+            st.plotly_chart(bar_signed(msel["Month"], msel["Net Profit"], "Net profit by month", text=msel["Net Profit"].map(inr)),
+                            width="stretch", key="monthly_profit_chart")
+        with right:
+            roi = msel.dropna(subset=["Monthly ROI"])
+            fig = go.Figure(go.Scatter(x=roi["Month"], y=roi["Monthly ROI"], mode="lines+markers",
+                                       line=dict(color=BLUE, width=2), hovertemplate="%{x}<br>ROI %{y:.2f}%<extra></extra>"))
+            fig.update_layout(title="Monthly ROI (%)", yaxis_title="%", margin=MARGIN, height=360)
+            if roi.empty:
+                fig.add_annotation(text="Enter capital on the Trading Book screen to see ROI", showarrow=False)
+            st.plotly_chart(fig, width="stretch", key="monthly_roi_chart")
+        if st.toggle(f"Show the monthly table ({len(msel)} months)", key="tgl_monthly"):
+            monthly_table = monthly_table_frame(msel, mk)
+            plain_table(monthly_table, key="tbl_monthly")
+            st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
+
+        # --------------------------------------- capital & charges (chart, then tables)
+        st.subheader("Capital and charges")
+        brk = pd.to_numeric(msel["Brokerage"], errors="coerce").fillna(0)
+        fig = go.Figure(go.Bar(x=msel["Month"], y=brk, marker_color=BLUE, text=brk.map(inr), textposition="outside",
+                               hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>"))
+        fig.update_layout(title="Brokerage & charges by month", yaxis_title="₹", margin=MARGIN, height=340)
+        st.plotly_chart(fig, width="stretch", key="brokerage_chart")
+        if st.toggle(f"Show the capital and brokerage tables ({len(msel)} months)", key="tgl_capbrk"):
+            p1, p2 = st.columns(2)
+            cap_t = capital_table(msel)
+            cap_t["Average of Capital"] = cap_t["Average of Capital"].map(inr)
+            brk_t = brokerage_table(msel)
+            brk_t["Brokerage"] = brk_t["Brokerage"].map(inr)
+            with p1:
+                plain_table(cap_t, key="tbl_capital")
+            with p2:
+                plain_table(brk_t, key="tbl_brokerage")
 
 # ================================================================ INVESTMENT ==
 def render_holdings(view: pd.DataFrame, heading: str, key: str) -> dict:

@@ -178,6 +178,15 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.5
+- Home class tables (Equity and ETF): a **Qty** column now sits before Buy price, on every user's
+  section and in the Family dashboards.
+- **Grand Total strips are glued and aligned**: the pinned total under every table now uses the same
+  column widths as the table and sits directly beneath it (Home and Dashboard Reports).
+- Dashboard Reports: the Trading tab is now **Yearly Trading Performance**, and a new
+  **Trading Monthly performance** tab holds the monthly charts, monthly table and
+  capital & brokerage sections (the Year filter on the yearly tab applies to both).
+
 ## What's new in v3.4
 - Investment Book: **SIP plans moved to the bottom** of the page.
 - **Filter by stock and by month** dropdowns on: Trading Book → Open positions and Trades saved,

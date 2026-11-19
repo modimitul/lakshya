@@ -52,9 +52,10 @@ def holdings_by_class_tables(member_frames: dict, key: str) -> None:
         total_col = "Invested" if single else "Total invested"
         tbl[total_col] = tbl[member_names].sum(axis=1, skipna=True)
         if cls in ("Equity", "ETF"):
-            # average buy price of what is still held = invested ÷ quantity held
+            # quantity held, then average buy price of what is still held = invested ÷ quantity
             _qty = pd.Series({stk: stock_qty.get(stk) for stk in all_stocks})
-            tbl.insert(1, "Buy price", (tbl[total_col] / _qty.where(_qty > 0)).round(2))
+            tbl.insert(1, "Qty", _qty)
+            tbl.insert(2, "Buy price", (tbl[total_col] / _qty.where(_qty > 0)).round(2))
         if single:
             tbl = tbl.drop(columns=member_names) if member_names != [total_col] else tbl
         grand = float(tbl[total_col].sum())
@@ -63,15 +64,17 @@ def holdings_by_class_tables(member_frames: dict, key: str) -> None:
         shown = tbl.reset_index().rename(columns={"index": "Stock"})
         total_row = {c: pd.NA for c in shown.columns}
         total_row.update({"Stock": "Grand Total", "Sector": "", total_col: grand, "% of class": 100.0 if grand else pd.NA})
-        if "Buy price" in shown.columns:
-            total_row["Buy price"] = pd.NA
+        for extra in ("Buy price", "Qty"):
+            if extra in shown.columns:
+                total_row[extra] = pd.NA
         shown = pd.concat([shown, pd.DataFrame([total_row])], ignore_index=True)
         for col in shown.columns:
             if col in ("Stock", "Sector"):
                 continue
             shown[col] = shown[col].map(
                 lambda v, c=col: (pct(v, 1) + "%") if c == "% of class" and pd.notna(v)
-                else ((inr(v, 2) if c == "Buy price" else inr(v)) if pd.notna(v) else "—"))
+                else ((f"{v:,.0f}" if c == "Qty" else inr(v, 2) if c == "Buy price" else inr(v))
+                      if pd.notna(v) else "—"))
         plain_table(shown, key=f"{key}_{cls.lower().replace(' ', '_')}",
                     full_height=len(shown) <= 25)
 

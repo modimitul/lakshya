@@ -723,8 +723,9 @@ def test_default_owner_is_used_when_nobody_signed_in(tmp_path, monkeypatch):
     at = app("screens/reports.py")
     assert not at.exception, [e.value for e in at.exception]
     headers = [h.value for h in at.subheader]
-    expected = ["Yearly performance", "My returns vs benchmarks", "Monthly performance", "Capital and charges", "Breakdown"]
-    assert [h for h in headers if h in expected] == expected        # yearly first, monthly after
+    # monthly sections live in their own "Trading Monthly performance" tab (rendered after the yearly tab)
+    expected = ["Yearly performance", "My returns vs benchmarks", "Breakdown", "Monthly performance", "Capital and charges"]
+    assert [h for h in headers if h in expected] == expected
     assert any(t.label.startswith("Show the monthly table") for t in at.toggle)  # table off by default, charts open
     assert any(t.label.startswith("Show the capital and brokerage tables") for t in at.toggle)
     assert by_label(at.multiselect, "Benchmarks to compare").value[:3] == ["GOLD BEES", "SILVER BEES", "Nifty ROI"]
@@ -1094,3 +1095,32 @@ def test_v34_home_buy_price_for_equity_and_etf():
     tcs_tbl = next(f for f in with_bp if "TCS" in set(f.value["Stock"]))
     bp = tcs_tbl.value.loc[tcs_tbl.value["Stock"] == "TCS", "Buy price"].iloc[0]
     assert "3,000" in str(bp)
+
+
+def test_v35_tabs_split_and_home_qty_column():
+    """Dashboard has Yearly Trading Performance / Trading Monthly performance / Investments
+    tabs; Home Equity & ETF tables show Qty before Buy price."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    at = app("screens/reports.py")
+    tab_labels = [t.label for t in at.tabs]
+    assert tab_labels == ["Yearly Trading Performance", "Trading Monthly performance", "Investments"]
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23"], "SECTORS": ["IT", "ETF"],
+        "STOCK": ["TCS", "GOLDBEES"], "QTY": [10, 100], "BUY": [3000.0, 60.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+    at2 = app()
+    assert not at2.exception, [e.value for e in at2.exception]
+    tables = [f for f in at2.get("dataframe") if "Buy price" in f.value.columns
+              and not f.value["Stock"].astype(str).eq("Grand Total").all()]
+    assert tables
+    for f in tables:
+        cols = list(f.value.columns)
+        assert cols.index("Qty") == cols.index("Buy price") - 1       # Qty right before Buy price
+    eq = next(f for f in tables if "TCS" in set(f.value["Stock"]))
+    row = eq.value[eq.value["Stock"] == "TCS"].iloc[0]
+    assert row["Qty"] == "10" and "3,000" in str(row["Buy price"])
