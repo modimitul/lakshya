@@ -178,6 +178,14 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.8
+- **Profit booked on sales moved**: the whole section (metrics, by-year table and chart, per-sale table
+  and chart) now lives under **Yearly Trading Performance → Profit booked by stock → Delivery**, since
+  those profits are delivery-based. The Delivery pivot combines Trading Book Equity Delivery trades and
+  Investment Book profit booked per stock, and respects the Year basis/filter. The Investments tab ends
+  after the holdings tables (a one-line pointer shows where the section went; the Excel download still
+  carries the sales sheets). With no settled trades, the section still shows from the Investment Book.
+
 ## What's new in v3.7
 - Yearly Trading Performance tab gains, under the yearly table:
   - **Profit booked by stock** — Intraday and Delivery tabs, each a per-stock pivot (Intraday sums

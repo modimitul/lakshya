@@ -59,6 +59,104 @@ def trade_category(row) -> str:
 CATEGORY_ORDER = ["Equity", "ETF", "MF", "Debt", "Futures & Options"]
 
 
+def invest_sales_for_owner():
+    """The current owner's Investment Book sales, matched with their LIFO/FIFO setting."""
+    entries_ = state.get_frame("portfolio")
+    meta_ = state.get_meta()
+    method_ = str(meta_.get("sale_match_method", "lifo")).lower()
+    if entries_ is None or entries_.empty:
+        return pd.DataFrame(), method_
+    _, inv_sales_ = match_sales(with_asset_class(entries_, meta_.get("asset_class_overrides", {})), method=method_)
+    return inv_sales_, method_
+
+
+def render_profit_booked_on_sales(inv_sales: pd.DataFrame, inv_method: str, inv_method_label: str) -> None:
+    """The Investment Book 'Profit booked on sales' section (metrics, by-year, per-sale) —
+    lives in Yearly Trading Performance → Profit booked by stock → Delivery."""
+    st.markdown("### Profit booked on sales (Investment Book)")
+    st.caption(f"Cost basis matched **{inv_method_label}** "
+               f"({'latest' if inv_method == 'lifo' else 'earliest'} buy lots consumed first) — "
+               "set the method and manage the SELL rows in Investment Book.")
+    ss = sales_summary(inv_sales)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Profit booked", inr(ss["profit"], prefix="₹"))
+    k2.metric("Cost of lots sold", inr(ss["cost"], prefix="₹"))
+    k3.metric("ROI", f"{pct(ss['roi'], 1)}%" if ss["roi"] is not None else "—", help="Profit ÷ cost of the lots sold.")
+    k4.metric("CAGR", f"{pct(ss['cagr'], 1)}%" if ss["cagr"] is not None else "—",
+              help="(Sale value ÷ cost)^(1 ÷ cost-weighted years held) − 1, across all sales shown.")
+    k5.metric("Sales", f"{ss['count']}")
+
+    ysum = yearly_sales_summary(inv_sales)
+    if not ysum.empty:
+        st.markdown("**By year**")
+        yshow = pd.DataFrame({
+            "Year": ysum["Year"].astype(str), "Sales": ysum["Sales"],
+            "Sale value": ysum["Sale value"].map(inr), f"Cost ({inv_method_label})": ysum["Cost"].map(inr),
+            "Profit booked": ysum["Profit"].map(inr),
+            "ROI %": ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
+            "CAGR %": ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
+        })
+        ytotal = pd.DataFrame([{"Year": "Total", "Sales": int(ysum["Sales"].sum()),
+                                "Sale value": inr(ysum["Sale value"].sum()), f"Cost ({inv_method_label})": inr(ss["cost"]),
+                                "Profit booked": inr(ss["profit"]),
+                                "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—",
+                                "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
+        plain_table(pd.concat([yshow, ytotal], ignore_index=True), key="tbl_profit_by_year")
+        figy = go.Figure()
+        figy.add_bar(name="Profit booked (₹)", x=ysum["Year"].astype(str), y=ysum["Profit"],
+                     marker_color=[GREEN if v >= 0 else RED for v in ysum["Profit"]],
+                     text=ysum["Profit"].map(inr), textposition="outside",
+                     hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+        figy.add_scatter(name="ROI (%)", x=ysum["Year"].astype(str), y=ysum["ROI %"], yaxis="y2",
+                         mode="lines+markers+text", text=ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
+                         textposition="top center", line=dict(color=BLUE, width=2),
+                         hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
+        figy.add_scatter(name="CAGR (%)", x=ysum["Year"].astype(str), y=ysum["CAGR %"], yaxis="y2",
+                         mode="lines+markers+text", text=ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
+                         textposition="bottom center", line=dict(color="#C62828", width=2, dash="dot"),
+                         hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
+        figy.update_layout(title="Profit booked, ROI and CAGR by year", margin=MARGIN, height=400,
+                           xaxis=dict(type="category"), yaxis=dict(title="₹"),
+                           yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
+                           legend=dict(orientation="h", y=-0.25))
+        st.plotly_chart(figy, width="stretch", key="sales_yearly_chart")
+        st.caption("ROI = profit ÷ cost of the lots sold that year. CAGR = (sale value ÷ cost)^(1 ÷ cost-weighted "
+                   "years held) − 1 over that year's sales; the Total row aggregates all sales shown.")
+
+    st.markdown("**Per sale**")
+    srt = inv_sales.sort_values("cost", ascending=False, na_position="last")
+    sale_table = pd.DataFrame({
+        "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
+        "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
+        f"Cost ({inv_method_label})": srt["cost"].map(inr), "Profit": srt["profit"].map(inr),
+        "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
+        "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
+        "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
+    })
+    total_row_s = pd.DataFrame([{"Sold": "Total", "Stock": f"{len(srt):,} sales", "Qty": "", "Sell price": "",
+                                 "Sale value": inr(srt["sale_value"].sum()),
+                                 f"Cost ({inv_method_label})": inr(srt["cost"].sum()),
+                                 "Profit": inr(srt["profit"].sum()),
+                                 "ROI %": pct(srt["profit"].sum() / srt["cost"].sum() * 100) if srt["cost"].sum() else "—",
+                                 "First bought": "", "Years held": "", "CAGR %": ""}])
+    plain_table(pd.concat([sale_table, total_row_s], ignore_index=True), key="tbl_per_sale")
+    figs = go.Figure()
+    figs.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
+                 marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],
+                 text=srt["profit"].map(inr), textposition="outside", hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
+    figs.add_scatter(name="CAGR (%)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["cagr"], yaxis="y2",
+                     mode="markers+text", text=srt["cagr"].map(lambda v: pct(v, 1) + "%" if pd.notna(v) else ""),
+                     textposition="top center", marker=dict(color=BLUE, size=10),
+                     hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
+    figs.update_layout(title="Profit booked and CAGR per sale", margin=MARGIN, height=380, xaxis=dict(type="category"),
+                       yaxis=dict(title="₹"), yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
+                       legend=dict(orientation="h", y=-0.3))
+    st.plotly_chart(figs, width="stretch", key="sales_chart")
+    if (srt["unmatched_qty"] > 0).any():
+        st.warning("Some sales exceed the quantity bought before them; their unmatched part has no cost basis.")
+
+
+
 # =================================================================== TRADING ==
 DEFAULT_BENCH_SERIES = ["GOLD BEES", "SILVER BEES", "Nifty ROI", "BANK NIFTY ROI", "NIFTY IT ROI", "NASDAQ ROI", "DJI ROI"]
 
@@ -92,6 +190,11 @@ with trading_tab:
     if trades is None or trades.empty:
         st.info("No trades loaded for this owner yet.")
         st.page_link("screens/trading_input.py", label="Go to Trading Book", icon="📥")
+        _inv_fb, _m_fb = invest_sales_for_owner()
+        if not _inv_fb.empty:
+            st.subheader("Profit booked by stock — Delivery")
+            st.caption("From the Investment Book (no settled trades yet).")
+            render_profit_booked_on_sales(_inv_fb, _m_fb, _m_fb.upper())
     else:
         # Open positions never reach the dashboard: every figure, table, trade log and
         # download below is built from settled trades only.
@@ -103,6 +206,11 @@ with trading_tab:
             st.info(f"All {n_open:,} saved trade(s) are still open positions, so there is nothing settled to report yet. "
                     "They move into the Dashboard the moment they are squared off.")
             st.page_link("screens/trading_input.py", label="Go to Trading Book → Open positions", icon="📒")
+            _inv_fb, _m_fb = invest_sales_for_owner()
+            if not _inv_fb.empty:
+                st.subheader("Profit booked by stock — Delivery")
+                st.caption("From the Investment Book (no settled trades yet).")
+                render_profit_booked_on_sales(_inv_fb, _m_fb, _m_fb.upper())
         else:
             if n_open:
                 st.caption(f"{n_open} open position(s) are excluded from every figure here — including the trade log and "
@@ -237,7 +345,49 @@ with trading_tab:
                 _sub = trades[_types == "Equity Delivery"]
                 _pl_col = "pl" if ("pl" in trades.columns
                                    and pd.to_numeric(_sub.get("pl"), errors="coerce").notna().any()) else "gross_profit"
-                _stock_pivot(_sub, _pl_col, "Sum of Profit/Loss (₹)", "tbl_pivot_delivery")
+                # Investment Book sales are delivery-based profit too: combined here per stock.
+                inv_method = str(meta.get("sale_match_method", "lifo")).lower()
+                inv_method_label = inv_method.upper()
+                _inv_entries = state.get_frame("portfolio")
+                if _inv_entries is not None and not _inv_entries.empty:
+                    _, inv_sales = match_sales(
+                        with_asset_class(_inv_entries, meta.get("asset_class_overrides", {})), method=inv_method)
+                else:
+                    inv_sales = pd.DataFrame()
+                if year_pick and not inv_sales.empty:
+                    inv_sales = inv_sales[period_label(inv_sales["month"], basis).isin(year_pick).values]
+
+                pieces = []
+                if not _sub.empty and "stock" in _sub.columns:
+                    pieces.append(pd.DataFrame({"Stock": _sub["stock"].astype(str),
+                                                "profit": pd.to_numeric(_sub[_pl_col], errors="coerce").fillna(0)}))
+                if not inv_sales.empty:
+                    pieces.append(pd.DataFrame({"Stock": inv_sales["stock"].astype(str),
+                                                "profit": pd.to_numeric(inv_sales["profit"], errors="coerce").fillna(0)}))
+                if not pieces:
+                    st.info("No delivery trades or Investment Book sales in the selected year(s).")
+                else:
+                    st.caption("Trading Book **Equity Delivery** trades and **Investment Book profit booked** "
+                               f"({inv_method_label}-matched sales) combined, per stock.")
+                    piv = (pd.concat(pieces, ignore_index=True)
+                           .groupby("Stock", as_index=False)["profit"].sum()
+                           .rename(columns={"profit": "Sum of Profit/Loss (₹)"})
+                           .sort_values("Sum of Profit/Loss (₹)", ascending=False))
+                    _d_total = float(piv["Sum of Profit/Loss (₹)"].sum())
+                    shown_d = piv.copy()
+                    shown_d["Sum of Profit/Loss (₹)"] = shown_d["Sum of Profit/Loss (₹)"].map(inr)
+                    shown_d = pd.concat([shown_d, pd.DataFrame([{"Stock": "Grand Total",
+                                                                 "Sum of Profit/Loss (₹)": inr(_d_total)}])],
+                                        ignore_index=True)
+                    plain_table(shown_d, key="tbl_pivot_delivery", full_height=len(shown_d) <= 35)
+
+                # ---- moved here from the Investments tab: profit booked on sales ----
+                if not inv_sales.empty:
+                    render_profit_booked_on_sales(inv_sales, inv_method, inv_method_label)
+                elif _inv_entries is not None and not _inv_entries.empty:
+                    st.caption("No Investment Book sales recorded"
+                               + (" in the selected year(s)." if year_pick else
+                                  " yet — book one in Investment Book → Record a sale."))
 
             # ------------------- composite: profit booked per year, Equity vs F&O ----
             st.subheader("Profit booked by year — Equity vs Futures & Options")
@@ -636,100 +786,17 @@ with invest_tab:
             inv_sheets["Holdings (remaining)"] = view.assign(Month=view["month"].dt.strftime("%b-%y"))
         inv_sheets["All entries"] = classified_all.assign(Month=classified_all["month"].dt.strftime("%b-%y"))
 
-        # ---- profit booked on sales (FIFO/LIFO per the Investment Book setting)
-        st.subheader("Profit booked on sales")
-        st.caption(f"Cost basis matched **{inv_method_label}** "
-                   f"({'latest' if inv_method == 'lifo' else 'earliest'} buy lots consumed first) — "
-                   "set the method and manage the SELL rows in Investment Book → Entries saved → All entries.")
-        if sales_view is None or sales_view.empty:
-            st.caption("No sales recorded yet. Use Investment Book → Record a sale (or SIDE = SELL rows in an upload).")
-        else:
-            ss = sales_summary(sales_view)
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Profit booked", inr(ss["profit"], prefix="₹"))
-            k2.metric("Cost of lots sold", inr(ss["cost"], prefix="₹"))
-            k3.metric("ROI", f"{pct(ss['roi'], 1)}%" if ss["roi"] is not None else "—", help="Profit ÷ cost of the lots sold.")
-            k4.metric("CAGR", f"{pct(ss['cagr'], 1)}%" if ss["cagr"] is not None else "—",
-                      help="(Sale value ÷ cost)^(1 ÷ cost-weighted years held) − 1, across all sales shown.")
-            k5.metric("Sales", f"{ss['count']}")
+        # Profit booked on sales moved to Yearly Trading Performance -> Profit booked by stock -> Delivery.
+        st.caption("Looking for **Profit booked on sales**? It now lives under "
+                   "**Yearly Trading Performance → Profit booked by stock → Delivery**, together with the "
+                   "delivery trades from the Trading Book.")
+        if sales_view is not None and not sales_view.empty:
+            inv_sheets["Sales"] = sales_view            # the Excel download still carries the sales sheets
+            _ysum_dl = yearly_sales_summary(sales_view)
+            if not _ysum_dl.empty:
+                inv_sheets["Sales by year"] = _ysum_dl
 
-            # -- by year: table, then chart
-            ysum = yearly_sales_summary(sales_view)
-            if not ysum.empty:
-                st.markdown("**By year**")
-                yshow = pd.DataFrame({
-                    "Year": ysum["Year"].astype(str), "Sales": ysum["Sales"],
-                    "Sale value": ysum["Sale value"].map(inr), f"Cost ({inv_method_label})": ysum["Cost"].map(inr),
-                    "Profit booked": ysum["Profit"].map(inr),
-                    "ROI %": ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
-                    "CAGR %": ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
-                })
-                ytotal = pd.DataFrame([{"Year": "Total", "Sales": int(ysum["Sales"].sum()),
-                                        "Sale value": inr(ysum["Sale value"].sum()), f"Cost ({inv_method_label})": inr(ss["cost"]),
-                                        "Profit booked": inr(ss["profit"]),
-                                        "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—",
-                                        "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
-                yshow = pd.concat([yshow, ytotal], ignore_index=True)
-                plain_table(yshow, key="tbl_profit_by_year")
-                fig = go.Figure()
-                fig.add_bar(name="Profit booked (₹)", x=ysum["Year"].astype(str), y=ysum["Profit"],
-                            marker_color=[GREEN if v >= 0 else RED for v in ysum["Profit"]],
-                            text=ysum["Profit"].map(inr), textposition="outside",
-                            hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-                fig.add_scatter(name="ROI (%)", x=ysum["Year"].astype(str), y=ysum["ROI %"], yaxis="y2",
-                                mode="lines+markers+text", text=ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
-                                textposition="top center", line=dict(color=BLUE, width=2),
-                                hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
-                fig.add_scatter(name="CAGR (%)", x=ysum["Year"].astype(str), y=ysum["CAGR %"], yaxis="y2",
-                                mode="lines+markers+text", text=ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
-                                textposition="bottom center", line=dict(color="#C62828", width=2, dash="dot"),
-                                hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
-                fig.update_layout(title="Profit booked, ROI and CAGR by year", margin=MARGIN, height=400,
-                                  xaxis=dict(type="category"), yaxis=dict(title="₹"),
-                                  yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
-                                  legend=dict(orientation="h", y=-0.25))
-                st.plotly_chart(fig, width="stretch", key="sales_yearly_chart")
-                st.caption("ROI = profit ÷ cost of the lots sold that year. CAGR = (sale value ÷ cost)^(1 ÷ cost-weighted "
-                           "years held) − 1 over that year's sales; the Total row aggregates all sales shown.")
-                inv_sheets["Sales by year"] = ysum
-
-            # -- per sale: table, then chart
-            st.markdown("**Per sale**")
-            srt = sales_view.sort_values("cost", ascending=False, na_position="last")
-            sale_table = pd.DataFrame({
-                "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
-                "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
-                f"Cost ({inv_method_label})": srt["cost"].map(inr), "Profit": srt["profit"].map(inr), "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
-                "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
-                "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
-            })
-            kept = srt.loc[sale_table.index]
-            total_row = pd.DataFrame([{"Sold": "Total", "Stock": f"{len(kept):,} sales", "Qty": "", "Sell price": "",
-                                       "Sale value": inr(kept["sale_value"].sum()),
-                                       f"Cost ({inv_method_label})": inr(kept["cost"].sum()),
-                                       "Profit": inr(kept["profit"].sum()),
-                                       "ROI %": pct(kept["profit"].sum() / kept["cost"].sum() * 100) if kept["cost"].sum() else "—",
-                                       "First bought": "", "Years held": "", "CAGR %": ""}])
-            sale_table = pd.concat([sale_table, total_row], ignore_index=True)
-            plain_table(sale_table, key="tbl_per_sale")
-            fig = go.Figure()
-            fig.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
-                        marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],
-                        text=srt["profit"].map(inr), textposition="outside", hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-            fig.add_scatter(name="CAGR (%)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["cagr"], yaxis="y2",
-                            mode="markers+text", text=srt["cagr"].map(lambda v: pct(v, 1) + "%" if pd.notna(v) else ""),
-                            textposition="top center", marker=dict(color=BLUE, size=10),
-                            hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
-            fig.update_layout(title="Profit booked and CAGR per sale", margin=MARGIN, height=380, xaxis=dict(type="category"),
-                              yaxis=dict(title="₹"), yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
-                              legend=dict(orientation="h", y=-0.3))
-            st.plotly_chart(fig, width="stretch", key="sales_chart")
-            if (srt["unmatched_qty"] > 0).any():
-                st.warning("Some sales exceed the quantity bought before them; their unmatched part has no cost basis.")
-            inv_sheets["Sales"] = srt
-
-
-        st.subheader("Download")
+                st.subheader("Download")
         st.download_button("Download investment report (Excel)", to_excel_bytes(inv_sheets),
                            f"investment_report_{state.current_user()}.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")

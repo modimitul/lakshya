@@ -1185,3 +1185,37 @@ def test_v37_yearly_tab_pivots_composite_and_category_kpis():
     kpi = next(f for f in frames if "Category" in f.value.columns and "Net profit" in f.value.columns)
     cats = kpi.value["Category"].tolist()
     assert "Equity" in cats and "Futures & Options" in cats
+
+
+def test_v38_profit_booked_moved_to_delivery_tab():
+    """Profit booked on sales renders under the Delivery tab (combined with delivery trades)
+    and is gone from the Investments tab."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.parse import trade_from_form
+    from core.portfolio import clean_portfolio, sale_from_form
+
+    # a delivery trade + an investment sale on the same stock
+    t = trade_from_form(buy_date=dt.date(2026, 1, 7), stock="TCS", type="Equity Delivery",
+                        qty=5, buy=3000.0, sell=3200.0, sale_date=dt.date(2026, 2, 10), brokerage=0.0, lot=1)
+    store.save_frame("owner", "trades", t.trades)
+    raw = pd.DataFrame({"MONTH": ["Jul-23"], "SECTORS": ["IT"], "STOCK": ["TCS"], "QTY": [10], "BUY": [3000.0]})
+    sale = sale_from_form(dt.date(2024, 1, 1), "IT", "TCS", 10, 3500.0, 0.0).entries
+    store.save_frame("owner", "portfolio", pd.concat([clean_portfolio(raw).entries, sale], ignore_index=True))
+
+    at = app("screens/reports.py")
+    assert not at.exception, [e.value for e in at.exception]
+    body = " ".join(str(m.value) for m in at.markdown) + " ".join(str(h.value) for h in at.subheader)
+    assert "Profit booked on sales (Investment Book)" in body
+    # combined pivot: TCS = 1,000 (trade) + 5,000 (investment sale)
+    deliv = next(f for f in at.get("dataframe") if "Sum of Profit/Loss (₹)" in f.value.columns
+                 and not f.value["Stock"].astype(str).eq("Grand Total").all())
+    assert deliv.value["Stock"].tolist() == ["TCS"]
+    assert "6,000" in str(deliv.value["Sum of Profit/Loss (₹)"].iloc[0])
+    # per-sale table present with LIFO cost column
+    assert any("Cost (LIFO)" in f.value.columns for f in at.get("dataframe"))
+    # the Investments tab no longer holds the section, only the pointer caption
+    assert "Profit booked on sales\n" not in "\n".join(str(h.value) for h in at.subheader)
+    captions = " ".join(str(c.value) for c in at.caption)
+    assert "now lives under" in captions
