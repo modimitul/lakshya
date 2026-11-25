@@ -178,6 +178,16 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.7
+- Yearly Trading Performance tab gains, under the yearly table:
+  - **Profit booked by stock** — Intraday and Delivery tabs, each a per-stock pivot (Intraday sums
+    Gross Profit, Delivery sums Profit/Loss) sorted highest first with a Grand Total.
+  - **Profit booked by year — Equity vs Futures & Options** — a composite table per year with Equity,
+    ETF, MF, Debt and Futures & Options columns plus a Total and a Grand Total row.
+  - **KPIs by category** — Net profit, Avg monthly ROI, CAGR, Avg yearly ROI/CAGR, Win rate, Best and
+    Worst month, one row each for Equity, ETF, MF, Debt and Futures & Options.
+- The trade log is now shown with a **radio button** (Hide / Show).
+
 ## What's new in v3.6
 - Investment Book → All entries: a **fully-sold lot** (buy + a matched sale for its whole quantity)
   no longer clutters the list — its profit shows under Dashboard Reports → Investments → Profit

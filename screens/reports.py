@@ -10,6 +10,7 @@ from core.filters import plain_table, stock_month_filter
 from core.formatting import inr, pct
 from core.metrics import (breakdown, brokerage_table, cagr_from_monthly, capital_table, kpis, monthly_summary,
                           to_excel_bytes, yearly_summary, yearly_with_total)
+from core.strategies import CHARGE_TYPE, NON_OPTION_TYPES, OTHER_TYPE, canonical
 from core.portfolio import (ASSET_CLASSES, asset_class_summary, filter_entries, holdings, match_sales,
                             sales_summary, sector_allocation, sector_class_map, with_asset_class,
                             yearly_sales_summary)
@@ -32,6 +33,30 @@ def bar_signed(x, y, title, text=None, height=360, yaxis="₹"):
                            hovertemplate="%{x}<br>%{y:,.0f}<extra></extra>"))
     fig.update_layout(title=title, yaxis_title=yaxis, margin=MARGIN, height=height)
     return fig
+
+
+EQUITY_TRADE_TYPES = {"Equity", "Equity Intraday", "Equity Delivery"}
+
+
+def trade_category(row) -> str:
+    """Equity / ETF / MF / Debt / Futures & Options / Charges, from the trade's type and
+    (for cash trades) the stock's sector out of Stocks Management."""
+    t = canonical(row.get("type"))
+    if t == CHARGE_TYPE:
+        return "Charges"
+    if t == "Debt":
+        return "Debt"
+    if t in EQUITY_TRADE_TYPES or t == OTHER_TYPE or not t:
+        blob = f"{row.get('sector', '')} {row.get('stock', '')}".upper()
+        if "ETF" in blob or "BEES" in blob:
+            return "ETF"
+        if "MUTUAL" in blob or " MF" in f" {blob}":
+            return "MF"
+        return "Equity"
+    return "Futures & Options"
+
+
+CATEGORY_ORDER = ["Equity", "ETF", "MF", "Debt", "Futures & Options"]
 
 
 # =================================================================== TRADING ==
@@ -180,6 +205,108 @@ with trading_tab:
                        + "Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
                        "Grand Total averages Investments and ROI across years and sums the rest.")
 
+            # ------------------------- profit booked by stock: Intraday / Delivery pivots ----
+            st.subheader("Profit booked by stock")
+            st.caption("Settled trades in the selected year(s), summed per stock — like the Excel pivots. "
+                       "Intraday sums **Gross Profit**; Delivery sums **Profit/Loss**.")
+            _cats = (trades.apply(trade_category, axis=1) if not trades.empty
+                     else pd.Series("", index=trades.index, dtype=str))
+            _types = (trades["type"].map(canonical) if "type" in trades.columns
+                      else pd.Series("", index=trades.index, dtype=str))
+            tab_intra, tab_deliv = st.tabs(["Intraday", "Delivery"])
+
+            def _stock_pivot(sub: pd.DataFrame, value_col: str, value_label: str, key: str) -> None:
+                if sub.empty or "stock" not in sub.columns:
+                    st.info("No trades of this type in the selected year(s).")
+                    return
+                vals = pd.to_numeric(sub[value_col], errors="coerce").fillna(0)
+                piv = (pd.DataFrame({"Stock": sub["stock"].astype(str), value_label: vals})
+                       .groupby("Stock", as_index=False).sum()
+                       .sort_values(value_label, ascending=False))
+                total = float(piv[value_label].sum())
+                shown = piv.copy()
+                shown[value_label] = shown[value_label].map(inr)
+                shown = pd.concat([shown, pd.DataFrame([{"Stock": "Grand Total", value_label: inr(total)}])],
+                                  ignore_index=True)
+                plain_table(shown, key=key, full_height=len(shown) <= 35)
+
+            with tab_intra:
+                _sub = trades[_types == "Equity Intraday"]
+                _stock_pivot(_sub, "gross_profit", "Sum of Gross Profit (₹)", "tbl_pivot_intraday")
+            with tab_deliv:
+                _sub = trades[_types == "Equity Delivery"]
+                _pl_col = "pl" if ("pl" in trades.columns
+                                   and pd.to_numeric(_sub.get("pl"), errors="coerce").notna().any()) else "gross_profit"
+                _stock_pivot(_sub, _pl_col, "Sum of Profit/Loss (₹)", "tbl_pivot_delivery")
+
+            # ------------------- composite: profit booked per year, Equity vs F&O ----
+            st.subheader("Profit booked by year — Equity vs Futures & Options")
+            _nc = trades[_cats != "Charges"] if not trades.empty else trades
+            if _nc.empty:
+                st.info("No settled trades in the selected year(s).")
+            else:
+                comp = pd.DataFrame({
+                    "Year": period_label(_nc["month"], basis).astype(str),
+                    "Category": _cats[_nc.index],
+                    "profit": pd.to_numeric(_nc["gross_profit"], errors="coerce").fillna(0),
+                })
+                pivot = comp.pivot_table(index="Year", columns="Category", values="profit",
+                                         aggfunc="sum", fill_value=0.0)
+                col_order = [c for c in CATEGORY_ORDER if c in pivot.columns] + \
+                            [c for c in pivot.columns if c not in CATEGORY_ORDER]
+                pivot = pivot[col_order]
+                pivot["Total"] = pivot.sum(axis=1)
+                shown_c = pivot.reset_index()
+                gt = {"Year": "Grand Total", **{c: float(pivot[c].sum()) for c in pivot.columns}}
+                shown_c = pd.concat([shown_c, pd.DataFrame([gt])], ignore_index=True)
+                for c in shown_c.columns:
+                    if c != "Year":
+                        shown_c[c] = shown_c[c].map(inr)
+                plain_table(shown_c, key="tbl_year_composite", full_height=len(shown_c) <= 25)
+                st.caption("Gross profit (net of brokerage on the row) summed per "
+                           + ("financial year. " if basis == "financial" else "calendar year. ")
+                           + "Cash-market trades split into Equity / ETF / MF / Debt by the stock's sector; "
+                           "every option strategy and future counts as Futures & Options. Standalone charge "
+                           "entries are not in this table.")
+
+            # ----------------------- KPIs per category: Equity · ETF · MF · Debt · F&O ----
+            st.subheader("KPIs by category")
+            cat_rows = []
+            for cat in CATEGORY_ORDER:
+                sub = trades[_cats == cat] if not trades.empty else trades
+                if sub.empty:
+                    continue
+                s_sum = monthly_summary(sub, capital)
+                ck = kpis(s_sum, sub)
+                cys = yearly_summary(s_sum, basis)
+                c_avg_y = pd.to_numeric(cys["Yearly ROI"], errors="coerce").mean() if not cys.empty else None
+                c_avg_y = None if c_avg_y is None or pd.isna(c_avg_y) else float(c_avg_y)
+                c_cagrs = []
+                if not s_sum.empty:
+                    for _, grp in s_sum.groupby(period_label(s_sum["month"], basis), sort=False):
+                        c = cagr_from_monthly(grp["Monthly ROI"])
+                        if c is not None:
+                            c_cagrs.append(c)
+                c_avg_yc = sum(c_cagrs) / len(c_cagrs) if c_cagrs else None
+                cat_rows.append({
+                    "Category": cat,
+                    "Net profit": inr(ck["net_profit"], prefix="₹"),
+                    "Avg monthly ROI": f"{pct(ck['avg_roi'])}%" if ck["avg_roi"] is not None else "—",
+                    "CAGR": f"{pct(ck['cagr'])}%" if ck.get("cagr") is not None else "—",
+                    "Avg yearly ROI": f"{pct(c_avg_y)}%" if c_avg_y is not None else "—",
+                    "Avg yearly CAGR": f"{pct(c_avg_yc)}%" if c_avg_yc is not None else "—",
+                    "Win rate": f"{pct(ck['win_rate'], 1)}%" if ck["win_rate"] is not None else "—",
+                    "Best month": f"{ck['best_month'][0]} ({inr(ck['best_month'][1], prefix='₹')})",
+                    "Worst month": f"{ck['worst_month'][0]} ({inr(ck['worst_month'][1], prefix='₹')})",
+                })
+            if cat_rows:
+                plain_table(pd.DataFrame(cat_rows), key="tbl_kpis_by_category", full_height=True)
+                st.caption("Each row uses only that category's trades; ROI figures divide by the same monthly "
+                           "capital as the overall KPIs, so they show each category's contribution against total "
+                           "capital. Standalone charge entries are excluded.")
+            else:
+                st.info("No settled trades to break down in the selected year(s).")
+
             # ----------------------------------------- vs benchmarks (table, then one simple chart)
             def overall_bar(frame: pd.DataFrame, label_col: str, total_label: str, title: str, key: str) -> None:
                 """One horizontal bar per series for the total/overall row; the owner's bar highlighted."""
@@ -240,7 +367,7 @@ with trading_tab:
                     shown_bd["Avg trade ROI"] = shown_bd["Avg trade ROI"].map(pct)
                 plain_table(shown_bd, key="tbl_breakdown")
 
-            if st.toggle("Show the trade log", key="tgl_tradelog"):
+            if st.radio("Trade log", ["Hide", "Show"], horizontal=True, key="radio_tradelog") == "Show":
                 log = stock_month_filter(trades.copy(), key="rep_tradelog_filter")
                 log["Month"] = log["month"].dt.strftime("%b-%y")
                 lead = [c for c in ("Month", "stock", "type", "strike", "qty", "buy", "buy_date", "sell",

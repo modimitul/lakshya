@@ -309,7 +309,7 @@ def test_open_positions_flow_and_dashboard_exclusion():
     assert any(m.label == "Net profit" for m in at.metric)
     assert any(m.label == "Avg yearly ROI" for m in at.metric)
     # the open NIFTY row is nowhere on the dashboard — not even in the trade log tables
-    at.toggle(key="tgl_tradelog").set_value(True).run()
+    next(r for r in at.radio if r.key == "radio_tradelog").set_value("Show").run()
     found_log_total = False
     for frame in at.get("dataframe"):
         vals = frame.value.to_numpy().ravel().tolist()
@@ -1151,3 +1151,37 @@ def test_v36_home_deploy_buckets_and_card_breakup():
     assert "6,000" in str(gold)                                        # GOLDBEES 100 × 60
     eqetf = dep.value.loc[dep.value["Bucket"] == "Equity ETF", "Capital deployed"].iloc[0]
     assert "7,000" in str(eqetf)                                       # ITBEES 200 × 35
+
+
+def test_v37_yearly_tab_pivots_composite_and_category_kpis():
+    """Yearly tab: Intraday/Delivery per-stock pivots with Grand Total, the Equity-vs-F&O
+    composite by year, KPIs by category, and the trade-log radio."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.parse import trade_from_form
+
+    t1 = trade_from_form(buy_date=dt.date(2026, 1, 5), stock="LTTS", type="Equity Intraday",
+                         qty=10, buy=100.0, sell=120.0, sale_date=dt.date(2026, 1, 5), brokerage=0.0, lot=1)
+    t2 = trade_from_form(buy_date=dt.date(2026, 1, 7), stock="TCS", type="Equity Delivery",
+                         qty=5, buy=3000.0, sell=3200.0, sale_date=dt.date(2026, 2, 10), brokerage=0.0, lot=1)
+    t3 = trade_from_form(sale_date=dt.date(2026, 3, 2), stock="NIFTY", type="Naked Put Sell", strike=22000,
+                         qty=75, sell=100.0, buy=40.0, buy_date=dt.date(2026, 3, 10), brokerage=0.0, lot=1)
+    store.save_frame("owner", "trades", pd.concat([t1.trades, t2.trades, t3.trades], ignore_index=True))
+
+    at = app("screens/reports.py")
+    assert not at.exception, [e.value for e in at.exception]
+    # trade log is a radio now
+    assert any(r.key == "radio_tradelog" for r in at.radio)
+    frames = at.get("dataframe")
+    intra = next(f for f in frames if "Sum of Gross Profit (₹)" in f.value.columns
+                 and not f.value["Stock"].astype(str).eq("Grand Total").all())
+    assert intra.value["Stock"].tolist() == ["LTTS"]
+    deliv = next(f for f in frames if "Sum of Profit/Loss (₹)" in f.value.columns
+                 and not f.value["Stock"].astype(str).eq("Grand Total").all())
+    assert deliv.value["Stock"].tolist() == ["TCS"]
+    comp = next(f for f in frames if "Futures & Options" in f.value.columns and "Year" in f.value.columns)
+    assert "Equity" in comp.value.columns and "Total" in comp.value.columns
+    kpi = next(f for f in frames if "Category" in f.value.columns and "Net profit" in f.value.columns)
+    cats = kpi.value["Category"].tolist()
+    assert "Equity" in cats and "Futures & Options" in cats
