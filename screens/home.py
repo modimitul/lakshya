@@ -79,6 +79,32 @@ def holdings_by_class_tables(member_frames: dict, key: str) -> None:
                     full_height=len(shown) <= 25)
 
 
+DEPLOY_ORDER = ["Equity", "Gold", "Silver", "Equity ETF", "Equity MF", "Liquid Fund", "Debt"]
+
+
+def deploy_bucket(row) -> str:
+    """Capital-deployed bucket: the ETF class is split into Gold, Silver and Equity ETF
+    (by the stock's name/sector); every other asset class keeps its own name."""
+    cls = str(row.get("asset_class") or "")
+    if cls == "ETF":
+        name = f"{row.get('stock', '')} {row.get('sector', '')}".upper()
+        if "GOLD" in name:
+            return "Gold"
+        if "SILVER" in name:
+            return "Silver"
+        return "Equity ETF"
+    return cls
+
+
+def deploy_summary(classified: pd.DataFrame) -> pd.Series:
+    """cost per deploy bucket, in DEPLOY_ORDER (extra buckets appended)."""
+    frame = classified.copy()
+    frame["deploy_class"] = frame.apply(deploy_bucket, axis=1)
+    sums = frame.groupby("deploy_class")["cost"].sum()
+    order = [c for c in DEPLOY_ORDER if c in sums.index] + [c for c in sums.index if c not in DEPLOY_ORDER]
+    return sums.reindex(order)
+
+
 CAP_ORDER = ["Large cap", "Mid cap", "Small cap", "Unclassified"]
 CAP_COLORS = {"Large cap": "#1565C0", "Mid cap": "#42A5F5", "Small cap": "#90CAF9", "Unclassified": "#B0BEC5"}
 
@@ -183,6 +209,11 @@ for i, u in enumerate(users_shown):
                 _n_stk = int(_rem["stock"].nunique()) if not _rem.empty else 0
                 _c_rem = float(_rem["cost"].sum()) if not _rem.empty else 0.0
                 st.write(f"Long term: {_n_stk} stocks held, {inr(_c_rem, prefix='₹')}")
+                _cls_card = with_asset_class(_rem, state.get_meta(u["slug"]).get("asset_class_overrides", {}))
+                _sums_card = _cls_card.groupby("asset_class")["cost"].sum()
+                _order_card = [c for c in ASSET_CLASSES if c in _sums_card.index] + \
+                              [c for c in _sums_card.index if c not in ASSET_CLASSES]
+                st.caption(" · ".join(f"{c} {inr(_sums_card[c], prefix='₹')}" for c in _order_card))
 
 # --------------------------------------- my investments: pies for this owner --
 _me = state.current_user()
@@ -197,6 +228,17 @@ if _my_portfolio is not None and not _my_portfolio.empty:
     else:
         _my_cls = with_asset_class(_my_rem, state.get_meta(_me).get("asset_class_overrides", {}))
         _my_sum = asset_class_summary(_my_cls)
+        # ---- total investment: capital deployed (ETFs split into Gold / Silver / Equity ETF) ----
+        st.markdown("**Total investment — capital deployed** (gold and silver ETFs counted as Gold "
+                    "and Silver; other ETFs as Equity ETF)")
+        _dep = deploy_summary(_my_cls)
+        _dep_total = float(_dep.sum())
+        _dep_tbl = pd.DataFrame({
+            "Bucket": list(_dep.index) + ["Grand Total"],
+            "Capital deployed": [inr(v, prefix="₹") for v in _dep.values] + [inr(_dep_total, prefix="₹")],
+            "% of total": [pct(v / _dep_total * 100, 1) + "%" for v in _dep.values] + ["100.0%"] if _dep_total else ["—"] * (len(_dep) + 1),
+        })
+        plain_table(_dep_tbl, key="tbl_my_deployed", full_height=True)
         mcol1, mcol2 = st.columns(2)
         with mcol1:
             _donut(_my_sum["Asset class"], _my_sum["Cost"], "Allocation by asset class", "my_class_pie")
@@ -251,7 +293,8 @@ if state.is_admin():
             })
         plain_table(pd.DataFrame(rows), key="tbl_family_trading")
 
-        st.markdown("**Investments — asset class allocation** (current holdings)")
+        st.markdown("**Investments — asset class allocation** (current holdings; gold and silver "
+                    "ETFs shown as Gold and Silver, other ETFs as Equity ETF)")
         per_member, class_order, member_frames = {}, [], {}
         for u in family:
             entries = state.get_frame("portfolio", u["slug"])
@@ -263,14 +306,16 @@ if state.is_admin():
                 continue
             classified = with_asset_class(remaining, state.get_meta(u["slug"]).get("asset_class_overrides", {}))
             member_frames[u["name"]] = classified
-            summary = asset_class_summary(classified)
-            per_member[u["name"]] = dict(zip(summary["Asset class"], summary["Cost"]))
-            for cls in summary["Asset class"]:
+            dep = deploy_summary(classified)          # ETF split into Gold / Silver / Equity ETF
+            per_member[u["name"]] = dep.to_dict()
+            for cls in dep.index:
                 if cls not in class_order:
                     class_order.append(cls)
         if not per_member:
             st.info("No current holdings among family members yet.")
         else:
+            class_order = [c for c in DEPLOY_ORDER if c in class_order] + \
+                          [c for c in class_order if c not in DEPLOY_ORDER]
             table = pd.DataFrame(index=class_order)
             for name, costs in per_member.items():
                 table[name] = [costs.get(cls) for cls in class_order]

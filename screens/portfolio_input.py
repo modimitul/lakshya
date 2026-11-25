@@ -388,8 +388,8 @@ if entries is not None and not entries.empty:
             st.caption("Sorted by stock (use the filter to see one stock). Cells are editable — including **Sector** — "
                        "press **Save changes** when done. Value is recalculated as Qty × Price "
                        "and months snap to their first day. **Sale date / Sale price**: fill both on an unsold lot "
-                       "to book a sale of the whole lot; on a sold lot, edit them to correct that sale "
-                       "(partial sales go through Record a sale).")
+                       "to book a sale of the whole lot — the lot then moves out of this list into Profit booked "
+                       "on the Dashboard. A partly-sold lot stays here; partial sales go through Record a sale.")
 
             buys_mask_all = (entries["side"].astype(str).str.lower() != "sell"
                              if "side" in entries.columns else pd.Series(True, index=entries.index))
@@ -410,6 +410,19 @@ if entries is not None and not entries.empty:
                                "(sold more than was held by the sale month?). Check Record a sale → Sales recorded.")
 
             _buy_rows = entries[buys_mask_all]
+            # Fully-sold lots (buy + matched sale for the whole quantity) leave this grid:
+            # their profit sits in Dashboard Reports → Investments → Profit booked, and their
+            # sale rows stay editable under Record a sale → Sales recorded.
+            _sold_map = {lot: sum(h["qty"] for h in hits) for lot, hits in lot_sales.items()}
+            _lot_qty = pd.to_numeric(_buy_rows["qty"], errors="coerce").fillna(0)
+            _sold_ser = pd.Series([_sold_map.get(i, 0.0) for i in _buy_rows.index], index=_buy_rows.index)
+            _fully_sold = (_lot_qty > 0) & (_sold_ser >= _lot_qty - 1e-6)
+            n_fully_sold = int(_fully_sold.sum())
+            _buy_rows = _buy_rows[~_fully_sold]
+            if n_fully_sold:
+                st.caption(f"{n_fully_sold} fully-sold lot(s) are not listed here — their profit booked is in "
+                           "**Dashboard Reports → Investments → Profit booked**, and their sales can be corrected "
+                           "or removed under **Record a sale → Sales recorded**.")
             _stock_choices = sorted(_buy_rows["stock"].dropna().astype(str).str.strip().str.upper().unique()) if "stock" in _buy_rows else []
             _f1, _f2, _ = st.columns([1.4, 1.1, 1.5])
             stock_filter = _f1.selectbox("Filter by stock", ["All stocks"] + _stock_choices, key="pf_entries_stock_filter")

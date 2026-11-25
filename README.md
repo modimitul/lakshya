@@ -178,6 +178,17 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.6
+- Investment Book → All entries: a **fully-sold lot** (buy + a matched sale for its whole quantity)
+  no longer clutters the list — its profit shows under Dashboard Reports → Investments → Profit
+  booked, and its sale rows stay editable in Record a sale → Sales recorded. Partly-sold lots stay.
+- Home: every owner card shows the **long-term breakup by class** (Equity · ETF · Equity MF ·
+  Liquid Fund · Debt) under the Long term line.
+- Home: a **Total investment — capital deployed** table in each user's Investments section, with
+  gold and silver ETFs counted as **Gold** and **Silver** and the rest of the ETFs as **Equity ETF**.
+- Family dashboards: the asset-class allocation table and pie use the same split — **Gold, Silver
+  and Equity ETF** instead of one ETF bucket.
+
 ## What's new in v3.5
 - Home class tables (Equity and ETF): a **Qty** column now sits before Buy price, on every user's
   section and in the Family dashboards.

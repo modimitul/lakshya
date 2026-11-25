@@ -418,22 +418,15 @@ def test_investment_entry_dropdown_and_sale_columns():
     remaining, sales = match_sales(saved)
     assert "SRF" not in set(remaining.loc[pd.to_numeric(remaining["qty"], errors="coerce") > 0, "stock"])
 
-    # one row per lot: no side column, the SOLD SRF lot shows its sale inline
+    # one row per lot, and a FULLY-SOLD lot leaves the grid (its profit lives in
+    # Dashboard Reports -> Investments -> Profit booked; sale rows stay in Sales recorded)
     at3 = app("screens/portfolio_input.py")
     editor = next(e for e in at3.get("data_editor") if "sale_date" in e.value.columns)
     disp = editor.value.reset_index(drop=True)
     assert "side" not in disp.columns                                   # merged view: one row per transaction
-    assert len(disp[disp["stock"] == "SRF"]) == 1                       # not a buy row + a sell row
-    srf_pos = int(disp.index[disp["stock"] == "SRF"][0])
-    assert float(disp.loc[srf_pos, "sale_price"]) == 2890.0             # the lot carries its sale info
-    assert float(disp.loc[srf_pos, "sold"]) == 50.0
-    # correcting the sale price on the lot's row updates the underlying sell row
-    at3.session_state[editor.key] = {"edited_rows": {str(srf_pos): {"sale_price": 2900.0}},
-                                     "added_rows": [], "deleted_rows": []}
-    by_label(at3.button, "Save changes").click().run()
-    assert not at3.exception, [e.value for e in at3.exception]
-    saved = store.load_frame("owner", "portfolio")
-    assert float(saved.loc[saved["side"] == "sell", "buy"].iloc[0]) == 2900.0
+    assert len(disp[disp["stock"] == "SRF"]) == 0                       # fully sold -> hidden here
+    captions = " ".join(str(c.value) for c in at3.caption)
+    assert "fully-sold lot" in captions and "Profit booked" in captions
 
     # filling only one of the two on an unsold lot is refused, nothing saved
     at4 = app("screens/portfolio_input.py")
@@ -1124,3 +1117,37 @@ def test_v35_tabs_split_and_home_qty_column():
     eq = next(f for f in tables if "TCS" in set(f.value["Stock"]))
     row = eq.value[eq.value["Stock"] == "TCS"].iloc[0]
     assert row["Qty"] == "10" and "3,000" in str(row["Buy price"])
+
+
+def test_v36_home_deploy_buckets_and_card_breakup():
+    """Home: owner card shows the long-term class breakup; the per-user section shows a
+    capital-deployed table with gold/silver ETFs split out of ETF."""
+    import pandas as pd
+    from core import store
+    from core.portfolio import clean_portfolio
+
+    raw = pd.DataFrame({
+        "MONTH": ["Jul-23", "Aug-23", "Sep-23", "Oct-23", "Nov-23"],
+        "SECTORS": ["IT", "ETF", "ETF", "ETF", "LIQUID FUND"],
+        "STOCK": ["TCS", "GOLDBEES", "SILVERBEES", "ITBEES", "ICICILIQ"],
+        "QTY": [10, 100, 50, 200, 40],
+        "BUY": [3000.0, 60.0, 80.0, 35.0, 100.0],
+    })
+    store.save_frame("owner", "portfolio", clean_portfolio(raw).entries)
+
+    at = app()
+    assert not at.exception, [e.value for e in at.exception]
+    captions = " ".join(str(c.value) for c in at.caption)
+    assert "Equity ₹" in captions and "ETF ₹" in captions              # card breakup (point 2)
+
+    dep = next(f for f in at.get("dataframe") if "Capital deployed" in f.value.columns)
+    buckets = dep.value["Bucket"].tolist()
+    assert buckets[:4] == ["Equity", "Gold", "Silver", "Equity ETF"]   # split + order (points 3-4)
+    assert "Liquid Fund" in buckets
+    # the Grand Total renders as its own pinned strip
+    assert any(f.value["Bucket"].astype(str).eq("Grand Total").all()
+               for f in at.get("dataframe") if "Bucket" in f.value.columns and len(f.value) == 1)
+    gold = dep.value.loc[dep.value["Bucket"] == "Gold", "Capital deployed"].iloc[0]
+    assert "6,000" in str(gold)                                        # GOLDBEES 100 × 60
+    eqetf = dep.value.loc[dep.value["Bucket"] == "Equity ETF", "Capital deployed"].iloc[0]
+    assert "7,000" in str(eqetf)                                       # ITBEES 200 × 35
