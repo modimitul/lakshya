@@ -70,93 +70,6 @@ def invest_sales_for_owner():
     return inv_sales_, method_
 
 
-def render_profit_booked_on_sales(inv_sales: pd.DataFrame, inv_method: str, inv_method_label: str) -> None:
-    """The Investment Book 'Profit booked on sales' section (metrics, by-year, per-sale) —
-    lives in Yearly Trading Performance → Profit booked by stock → Delivery."""
-    st.markdown("### Profit booked on sales (Investment Book)")
-    st.caption(f"Cost basis matched **{inv_method_label}** "
-               f"({'latest' if inv_method == 'lifo' else 'earliest'} buy lots consumed first) — "
-               "set the method and manage the SELL rows in Investment Book.")
-    ss = sales_summary(inv_sales)
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Profit booked", inr(ss["profit"], prefix="₹"))
-    k2.metric("Cost of lots sold", inr(ss["cost"], prefix="₹"))
-    k3.metric("ROI", f"{pct(ss['roi'], 1)}%" if ss["roi"] is not None else "—", help="Profit ÷ cost of the lots sold.")
-    k4.metric("CAGR", f"{pct(ss['cagr'], 1)}%" if ss["cagr"] is not None else "—",
-              help="(Sale value ÷ cost)^(1 ÷ cost-weighted years held) − 1, across all sales shown.")
-    k5.metric("Sales", f"{ss['count']}")
-
-    ysum = yearly_sales_summary(inv_sales)
-    if not ysum.empty:
-        st.markdown("**By year**")
-        yshow = pd.DataFrame({
-            "Year": ysum["Year"].astype(str), "Sales": ysum["Sales"],
-            "Sale value": ysum["Sale value"].map(inr), f"Cost ({inv_method_label})": ysum["Cost"].map(inr),
-            "Profit booked": ysum["Profit"].map(inr),
-            "ROI %": ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
-            "CAGR %": ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else "—"),
-        })
-        ytotal = pd.DataFrame([{"Year": "Total", "Sales": int(ysum["Sales"].sum()),
-                                "Sale value": inr(ysum["Sale value"].sum()), f"Cost ({inv_method_label})": inr(ss["cost"]),
-                                "Profit booked": inr(ss["profit"]),
-                                "ROI %": pct(ss["roi"], 1) if ss["roi"] is not None else "—",
-                                "CAGR %": pct(ss["cagr"], 1) if ss["cagr"] is not None else "—"}])
-        plain_table(pd.concat([yshow, ytotal], ignore_index=True), key="tbl_profit_by_year")
-        figy = go.Figure()
-        figy.add_bar(name="Profit booked (₹)", x=ysum["Year"].astype(str), y=ysum["Profit"],
-                     marker_color=[GREEN if v >= 0 else RED for v in ysum["Profit"]],
-                     text=ysum["Profit"].map(inr), textposition="outside",
-                     hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-        figy.add_scatter(name="ROI (%)", x=ysum["Year"].astype(str), y=ysum["ROI %"], yaxis="y2",
-                         mode="lines+markers+text", text=ysum["ROI %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
-                         textposition="top center", line=dict(color=BLUE, width=2),
-                         hovertemplate="%{x}<br>ROI %{y:.1f}%<extra></extra>")
-        figy.add_scatter(name="CAGR (%)", x=ysum["Year"].astype(str), y=ysum["CAGR %"], yaxis="y2",
-                         mode="lines+markers+text", text=ysum["CAGR %"].map(lambda v: pct(v, 1) if pd.notna(v) else ""),
-                         textposition="bottom center", line=dict(color="#C62828", width=2, dash="dot"),
-                         hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
-        figy.update_layout(title="Profit booked, ROI and CAGR by year", margin=MARGIN, height=400,
-                           xaxis=dict(type="category"), yaxis=dict(title="₹"),
-                           yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
-                           legend=dict(orientation="h", y=-0.25))
-        st.plotly_chart(figy, width="stretch", key="sales_yearly_chart")
-        st.caption("ROI = profit ÷ cost of the lots sold that year. CAGR = (sale value ÷ cost)^(1 ÷ cost-weighted "
-                   "years held) − 1 over that year's sales; the Total row aggregates all sales shown.")
-
-    st.markdown("**Per sale**")
-    srt = inv_sales.sort_values("cost", ascending=False, na_position="last")
-    sale_table = pd.DataFrame({
-        "Sold": srt["month"].dt.strftime("%b-%y"), "Stock": srt["stock"], "Qty": srt["qty"].map(lambda v: inr(v)),
-        "Sell price": srt["price"].map(lambda v: inr(v, 2)), "Sale value": srt["sale_value"].map(inr),
-        f"Cost ({inv_method_label})": srt["cost"].map(inr), "Profit": srt["profit"].map(inr),
-        "ROI %": srt["roi"].map(lambda v: pct(v, 1)),
-        "First bought": srt["first_buy"].map(lambda d: d.strftime("%b-%y") if pd.notna(d) else "—"),
-        "Years held": srt["years"].map(lambda v: pct(v, 1)), "CAGR %": srt["cagr"].map(lambda v: pct(v, 1)),
-    })
-    total_row_s = pd.DataFrame([{"Sold": "Total", "Stock": f"{len(srt):,} sales", "Qty": "", "Sell price": "",
-                                 "Sale value": inr(srt["sale_value"].sum()),
-                                 f"Cost ({inv_method_label})": inr(srt["cost"].sum()),
-                                 "Profit": inr(srt["profit"].sum()),
-                                 "ROI %": pct(srt["profit"].sum() / srt["cost"].sum() * 100) if srt["cost"].sum() else "—",
-                                 "First bought": "", "Years held": "", "CAGR %": ""}])
-    plain_table(pd.concat([sale_table, total_row_s], ignore_index=True), key="tbl_per_sale")
-    figs = go.Figure()
-    figs.add_bar(name="Profit booked (₹)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["profit"],
-                 marker_color=[GREEN if v >= 0 else RED for v in srt["profit"].fillna(0)],
-                 text=srt["profit"].map(inr), textposition="outside", hovertemplate="%{x}<br>₹%{y:,.0f}<extra></extra>")
-    figs.add_scatter(name="CAGR (%)", x=srt["stock"] + "  " + srt["month"].dt.strftime("%b-%y"), y=srt["cagr"], yaxis="y2",
-                     mode="markers+text", text=srt["cagr"].map(lambda v: pct(v, 1) + "%" if pd.notna(v) else ""),
-                     textposition="top center", marker=dict(color=BLUE, size=10),
-                     hovertemplate="%{x}<br>CAGR %{y:.1f}%<extra></extra>")
-    figs.update_layout(title="Profit booked and CAGR per sale", margin=MARGIN, height=380, xaxis=dict(type="category"),
-                       yaxis=dict(title="₹"), yaxis2=dict(title="%", overlaying="y", side="right", showgrid=False),
-                       legend=dict(orientation="h", y=-0.3))
-    st.plotly_chart(figs, width="stretch", key="sales_chart")
-    if (srt["unmatched_qty"] > 0).any():
-        st.warning("Some sales exceed the quantity bought before them; their unmatched part has no cost basis.")
-
-
-
 # =================================================================== TRADING ==
 DEFAULT_BENCH_SERIES = ["GOLD BEES", "SILVER BEES", "Nifty ROI", "BANK NIFTY ROI", "NIFTY IT ROI", "NASDAQ ROI", "DJI ROI"]
 
@@ -186,35 +99,61 @@ def monthly_table_frame(summary: pd.DataFrame, k: dict) -> pd.DataFrame:
 
 
 with trading_tab:
-    trades = state.get_frame("trades")
-    if trades is None or trades.empty:
-        st.info("No trades loaded for this owner yet.")
-        st.page_link("screens/trading_input.py", label="Go to Trading Book", icon="📥")
-        _inv_fb, _m_fb = invest_sales_for_owner()
-        if not _inv_fb.empty:
-            st.subheader("Profit booked by stock — Delivery")
-            st.caption("From the Investment Book (no settled trades yet).")
-            render_profit_booked_on_sales(_inv_fb, _m_fb, _m_fb.upper())
+    _real = state.get_frame("trades")
+    # Every sale recorded in the Investment Book books here as a settled Equity Delivery row,
+    # so it flows into the yearly table, KPIs, monthly figures and the Delivery pivot.
+    inv_sales_all, inv_method = invest_sales_for_owner()
+    inv_method_label = inv_method.upper()
+    if inv_sales_all is not None and not inv_sales_all.empty:
+        _profit = pd.to_numeric(inv_sales_all["profit"], errors="coerce").fillna(0.0)
+        _qty_s = pd.to_numeric(inv_sales_all["qty"], errors="coerce")
+        _cost_s = pd.to_numeric(inv_sales_all["cost"], errors="coerce")
+        _synth = pd.DataFrame({
+            "month": pd.to_datetime(inv_sales_all["month"], errors="coerce").dt.to_period("M").dt.to_timestamp(),
+            "buy_date": pd.to_datetime(inv_sales_all.get("first_buy"), errors="coerce"),
+            "sale_date": pd.to_datetime(inv_sales_all["month"], errors="coerce"),
+            "stock": inv_sales_all["stock"].astype(str),
+            "type": "Equity Delivery",
+            "qty": _qty_s,
+            "buy": (_cost_s / _qty_s.where(_qty_s > 0)).round(2),
+            "sell": pd.to_numeric(inv_sales_all["price"], errors="coerce"),
+            "brokerage": 0.0,
+            "gross_profit": _profit,
+            "pl": _profit,
+            "entry_kind": "trade",
+        })
     else:
+        _synth = pd.DataFrame()
+
+    n_open = 0
+    if _real is not None and not _real.empty:
         # Open positions never reach the dashboard: every figure, table, trade log and
         # download below is built from settled trades only.
         from core.parse import open_positions_mask
-        _open_mask = open_positions_mask(trades)
+        _open_mask = open_positions_mask(_real)
         n_open = int(_open_mask.sum())
-        trades = trades[~_open_mask].copy()
-        if trades.empty:
+        _real = _real[~_open_mask].copy()
+    else:
+        _real = pd.DataFrame()
+    trades = pd.concat([f for f in (_real, _synth) if not f.empty], ignore_index=True) if (not _real.empty or not _synth.empty) else _real
+
+    if trades is None or trades.empty:
+        if n_open:
             st.info(f"All {n_open:,} saved trade(s) are still open positions, so there is nothing settled to report yet. "
                     "They move into the Dashboard the moment they are squared off.")
             st.page_link("screens/trading_input.py", label="Go to Trading Book → Open positions", icon="📒")
-            _inv_fb, _m_fb = invest_sales_for_owner()
-            if not _inv_fb.empty:
-                st.subheader("Profit booked by stock — Delivery")
-                st.caption("From the Investment Book (no settled trades yet).")
-                render_profit_booked_on_sales(_inv_fb, _m_fb, _m_fb.upper())
         else:
+            st.info("No trades loaded for this owner yet. Trades come from the Trading Book; "
+                    "sales recorded in the Investment Book also book here as Equity Delivery rows.")
+            st.page_link("screens/trading_input.py", label="Go to Trading Book", icon="📥")
+    else:
+        if True:
             if n_open:
                 st.caption(f"{n_open} open position(s) are excluded from every figure here — including the trade log and "
                            "the Excel download — until squared off (Trading Book → Open positions).")
+            if not _synth.empty:
+                st.caption(f"{len(_synth):,} Investment Book sale(s) are booked here as Equity Delivery rows "
+                           f"({inv_method_label}-matched cost basis) — they count in every figure below.")
             capital = state.get_frame("capital")
             excluded = state.get_frame("excluded")
             meta = state.get_meta()
@@ -312,150 +251,6 @@ with trading_tab:
             st.caption(("Financial years run April to March. " if basis == "financial" else "")
                        + "Investments = average of the year's monthly capital; Yearly ROI = Net Profit ÷ Investments × 100. "
                        "Grand Total averages Investments and ROI across years and sums the rest.")
-
-            # ------------------------- profit booked by stock: Intraday / Delivery pivots ----
-            st.subheader("Profit booked by stock")
-            st.caption("Settled trades in the selected year(s), summed per stock — like the Excel pivots. "
-                       "Intraday sums **Gross Profit**; Delivery sums **Profit/Loss**.")
-            _cats = (trades.apply(trade_category, axis=1) if not trades.empty
-                     else pd.Series("", index=trades.index, dtype=str))
-            _types = (trades["type"].map(canonical) if "type" in trades.columns
-                      else pd.Series("", index=trades.index, dtype=str))
-            tab_intra, tab_deliv = st.tabs(["Intraday", "Delivery"])
-
-            def _stock_pivot(sub: pd.DataFrame, value_col: str, value_label: str, key: str) -> None:
-                if sub.empty or "stock" not in sub.columns:
-                    st.info("No trades of this type in the selected year(s).")
-                    return
-                vals = pd.to_numeric(sub[value_col], errors="coerce").fillna(0)
-                piv = (pd.DataFrame({"Stock": sub["stock"].astype(str), value_label: vals})
-                       .groupby("Stock", as_index=False).sum()
-                       .sort_values(value_label, ascending=False))
-                total = float(piv[value_label].sum())
-                shown = piv.copy()
-                shown[value_label] = shown[value_label].map(inr)
-                shown = pd.concat([shown, pd.DataFrame([{"Stock": "Grand Total", value_label: inr(total)}])],
-                                  ignore_index=True)
-                plain_table(shown, key=key, full_height=len(shown) <= 35)
-
-            with tab_intra:
-                _sub = trades[_types == "Equity Intraday"]
-                _stock_pivot(_sub, "gross_profit", "Sum of Gross Profit (₹)", "tbl_pivot_intraday")
-            with tab_deliv:
-                _sub = trades[_types == "Equity Delivery"]
-                _pl_col = "pl" if ("pl" in trades.columns
-                                   and pd.to_numeric(_sub.get("pl"), errors="coerce").notna().any()) else "gross_profit"
-                # Investment Book sales are delivery-based profit too: combined here per stock.
-                inv_method = str(meta.get("sale_match_method", "lifo")).lower()
-                inv_method_label = inv_method.upper()
-                _inv_entries = state.get_frame("portfolio")
-                if _inv_entries is not None and not _inv_entries.empty:
-                    _, inv_sales = match_sales(
-                        with_asset_class(_inv_entries, meta.get("asset_class_overrides", {})), method=inv_method)
-                else:
-                    inv_sales = pd.DataFrame()
-                if year_pick and not inv_sales.empty:
-                    inv_sales = inv_sales[period_label(inv_sales["month"], basis).isin(year_pick).values]
-
-                pieces = []
-                if not _sub.empty and "stock" in _sub.columns:
-                    pieces.append(pd.DataFrame({"Stock": _sub["stock"].astype(str),
-                                                "profit": pd.to_numeric(_sub[_pl_col], errors="coerce").fillna(0)}))
-                if not inv_sales.empty:
-                    pieces.append(pd.DataFrame({"Stock": inv_sales["stock"].astype(str),
-                                                "profit": pd.to_numeric(inv_sales["profit"], errors="coerce").fillna(0)}))
-                if not pieces:
-                    st.info("No delivery trades or Investment Book sales in the selected year(s).")
-                else:
-                    st.caption("Trading Book **Equity Delivery** trades and **Investment Book profit booked** "
-                               f"({inv_method_label}-matched sales) combined, per stock.")
-                    piv = (pd.concat(pieces, ignore_index=True)
-                           .groupby("Stock", as_index=False)["profit"].sum()
-                           .rename(columns={"profit": "Sum of Profit/Loss (₹)"})
-                           .sort_values("Sum of Profit/Loss (₹)", ascending=False))
-                    _d_total = float(piv["Sum of Profit/Loss (₹)"].sum())
-                    shown_d = piv.copy()
-                    shown_d["Sum of Profit/Loss (₹)"] = shown_d["Sum of Profit/Loss (₹)"].map(inr)
-                    shown_d = pd.concat([shown_d, pd.DataFrame([{"Stock": "Grand Total",
-                                                                 "Sum of Profit/Loss (₹)": inr(_d_total)}])],
-                                        ignore_index=True)
-                    plain_table(shown_d, key="tbl_pivot_delivery", full_height=len(shown_d) <= 35)
-
-                # ---- moved here from the Investments tab: profit booked on sales ----
-                if not inv_sales.empty:
-                    render_profit_booked_on_sales(inv_sales, inv_method, inv_method_label)
-                elif _inv_entries is not None and not _inv_entries.empty:
-                    st.caption("No Investment Book sales recorded"
-                               + (" in the selected year(s)." if year_pick else
-                                  " yet — book one in Investment Book → Record a sale."))
-
-            # ------------------- composite: profit booked per year, Equity vs F&O ----
-            st.subheader("Profit booked by year — Equity vs Futures & Options")
-            _nc = trades[_cats != "Charges"] if not trades.empty else trades
-            if _nc.empty:
-                st.info("No settled trades in the selected year(s).")
-            else:
-                comp = pd.DataFrame({
-                    "Year": period_label(_nc["month"], basis).astype(str),
-                    "Category": _cats[_nc.index],
-                    "profit": pd.to_numeric(_nc["gross_profit"], errors="coerce").fillna(0),
-                })
-                pivot = comp.pivot_table(index="Year", columns="Category", values="profit",
-                                         aggfunc="sum", fill_value=0.0)
-                col_order = [c for c in CATEGORY_ORDER if c in pivot.columns] + \
-                            [c for c in pivot.columns if c not in CATEGORY_ORDER]
-                pivot = pivot[col_order]
-                pivot["Total"] = pivot.sum(axis=1)
-                shown_c = pivot.reset_index()
-                gt = {"Year": "Grand Total", **{c: float(pivot[c].sum()) for c in pivot.columns}}
-                shown_c = pd.concat([shown_c, pd.DataFrame([gt])], ignore_index=True)
-                for c in shown_c.columns:
-                    if c != "Year":
-                        shown_c[c] = shown_c[c].map(inr)
-                plain_table(shown_c, key="tbl_year_composite", full_height=len(shown_c) <= 25)
-                st.caption("Gross profit (net of brokerage on the row) summed per "
-                           + ("financial year. " if basis == "financial" else "calendar year. ")
-                           + "Cash-market trades split into Equity / ETF / MF / Debt by the stock's sector; "
-                           "every option strategy and future counts as Futures & Options. Standalone charge "
-                           "entries are not in this table.")
-
-            # ----------------------- KPIs per category: Equity · ETF · MF · Debt · F&O ----
-            st.subheader("KPIs by category")
-            cat_rows = []
-            for cat in CATEGORY_ORDER:
-                sub = trades[_cats == cat] if not trades.empty else trades
-                if sub.empty:
-                    continue
-                s_sum = monthly_summary(sub, capital)
-                ck = kpis(s_sum, sub)
-                cys = yearly_summary(s_sum, basis)
-                c_avg_y = pd.to_numeric(cys["Yearly ROI"], errors="coerce").mean() if not cys.empty else None
-                c_avg_y = None if c_avg_y is None or pd.isna(c_avg_y) else float(c_avg_y)
-                c_cagrs = []
-                if not s_sum.empty:
-                    for _, grp in s_sum.groupby(period_label(s_sum["month"], basis), sort=False):
-                        c = cagr_from_monthly(grp["Monthly ROI"])
-                        if c is not None:
-                            c_cagrs.append(c)
-                c_avg_yc = sum(c_cagrs) / len(c_cagrs) if c_cagrs else None
-                cat_rows.append({
-                    "Category": cat,
-                    "Net profit": inr(ck["net_profit"], prefix="₹"),
-                    "Avg monthly ROI": f"{pct(ck['avg_roi'])}%" if ck["avg_roi"] is not None else "—",
-                    "CAGR": f"{pct(ck['cagr'])}%" if ck.get("cagr") is not None else "—",
-                    "Avg yearly ROI": f"{pct(c_avg_y)}%" if c_avg_y is not None else "—",
-                    "Avg yearly CAGR": f"{pct(c_avg_yc)}%" if c_avg_yc is not None else "—",
-                    "Win rate": f"{pct(ck['win_rate'], 1)}%" if ck["win_rate"] is not None else "—",
-                    "Best month": f"{ck['best_month'][0]} ({inr(ck['best_month'][1], prefix='₹')})",
-                    "Worst month": f"{ck['worst_month'][0]} ({inr(ck['worst_month'][1], prefix='₹')})",
-                })
-            if cat_rows:
-                plain_table(pd.DataFrame(cat_rows), key="tbl_kpis_by_category", full_height=True)
-                st.caption("Each row uses only that category's trades; ROI figures divide by the same monthly "
-                           "capital as the overall KPIs, so they show each category's contribution against total "
-                           "capital. Standalone charge entries are excluded.")
-            else:
-                st.info("No settled trades to break down in the selected year(s).")
 
             # ----------------------------------------- vs benchmarks (table, then one simple chart)
             def overall_bar(frame: pd.DataFrame, label_col: str, total_label: str, title: str, key: str) -> None:
@@ -564,6 +359,126 @@ with trading_tab:
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
             d2.download_button("Download monthly summary (CSV)", summary.drop(columns=["month"]).to_csv(index=False).encode(),
                                "monthly_summary.csv", "text/csv")
+
+
+            # ================= collapsible analysis sections (bottom of the page) =================
+            st.divider()
+            _types = (trades["type"].map(canonical) if "type" in trades.columns
+                      else pd.Series("", index=trades.index, dtype=str))
+            _cats = (trades.apply(trade_category, axis=1) if not trades.empty
+                     else pd.Series("", index=trades.index, dtype=str))
+
+            with st.expander("Profit booked by stock", expanded=False):
+                st.caption("Settled trades in the selected year(s), summed per stock — like the Excel pivots. "
+                           "Intraday sums **Gross Profit**; Delivery sums **Profit/Loss** and includes the "
+                           f"Investment Book sales booked above ({inv_method_label}-matched). "
+                           "Each tab has its own stock/month filter.")
+
+                def _stock_pivot(sub: pd.DataFrame, value_col: str, value_label: str, key: str) -> None:
+                    sub = stock_month_filter(sub, key=f"{key}_filter")
+                    if sub is None or sub.empty or "stock" not in sub.columns:
+                        st.info("No trades of this type match the selection.")
+                        return
+                    vals = pd.to_numeric(sub[value_col], errors="coerce").fillna(0)
+                    piv = (pd.DataFrame({"Stock": sub["stock"].astype(str), value_label: vals})
+                           .groupby("Stock", as_index=False).sum()
+                           .sort_values(value_label, ascending=False))
+                    total = float(piv[value_label].sum())
+                    shown = piv.copy()
+                    shown[value_label] = shown[value_label].map(inr)
+                    shown = pd.concat([shown, pd.DataFrame([{"Stock": "Grand Total", value_label: inr(total)}])],
+                                      ignore_index=True)
+                    plain_table(shown, key=key, full_height=len(shown) <= 35)
+
+                tab_intra, tab_deliv = st.tabs(["Intraday", "Delivery"])
+                with tab_intra:
+                    _stock_pivot(trades[_types == "Equity Intraday"], "gross_profit",
+                                 "Sum of Gross Profit (₹)", "tbl_pivot_intraday")
+                with tab_deliv:
+                    _sub = trades[_types == "Equity Delivery"].copy()
+                    if not _sub.empty:
+                        _plv = pd.to_numeric(_sub.get("pl"), errors="coerce")
+                        _gpv = pd.to_numeric(_sub.get("gross_profit"), errors="coerce")
+                        _sub["_deliv_profit"] = _plv.where(_plv.notna(), _gpv)
+                    _stock_pivot(_sub, "_deliv_profit", "Sum of Profit/Loss (₹)", "tbl_pivot_delivery")
+
+            with st.expander("Profit booked by year — Equity vs Futures & Options", expanded=False):
+                _nc = trades[_cats != "Charges"] if not trades.empty else trades
+                if _nc.empty:
+                    st.info("No settled trades in the selected year(s).")
+                else:
+                    _cat_opts = [c for c in CATEGORY_ORDER if (_cats == c).any()]
+                    comp_pick = st.multiselect("Categories", _cat_opts, placeholder="All categories",
+                                               key="comp_cat_pick")
+                    comp = pd.DataFrame({
+                        "Year": period_label(_nc["month"], basis).astype(str),
+                        "Category": _cats[_nc.index],
+                        "profit": pd.to_numeric(_nc["gross_profit"], errors="coerce").fillna(0),
+                    })
+                    if comp_pick:
+                        comp = comp[comp["Category"].isin(comp_pick)]
+                    if comp.empty:
+                        st.info("Nothing matches the category filter.")
+                    else:
+                        pivot = comp.pivot_table(index="Year", columns="Category", values="profit",
+                                                 aggfunc="sum", fill_value=0.0)
+                        col_order = [c for c in CATEGORY_ORDER if c in pivot.columns] + \
+                                    [c for c in pivot.columns if c not in CATEGORY_ORDER]
+                        pivot = pivot[col_order]
+                        pivot["Total"] = pivot.sum(axis=1)
+                        shown_c = pivot.reset_index()
+                        gt = {"Year": "Grand Total", **{c: float(pivot[c].sum()) for c in pivot.columns}}
+                        shown_c = pd.concat([shown_c, pd.DataFrame([gt])], ignore_index=True)
+                        for c in shown_c.columns:
+                            if c != "Year":
+                                shown_c[c] = shown_c[c].map(inr)
+                        plain_table(shown_c, key="tbl_year_composite", full_height=len(shown_c) <= 25)
+                        st.caption("Gross profit summed per "
+                                   + ("financial year. " if basis == "financial" else "calendar year. ")
+                                   + "Cash-market trades split into Equity / ETF / MF / Debt by the stock's "
+                                   "sector; option strategies and futures count as Futures & Options; "
+                                   "Investment Book sales land under their stock's category. Standalone "
+                                   "charge entries are not in this table.")
+
+            with st.expander("KPIs by category", expanded=False):
+                _kcat_opts = [c for c in CATEGORY_ORDER if (_cats == c).any()]
+                kpi_pick = st.multiselect("Categories", _kcat_opts, placeholder="All categories",
+                                          key="kpi_cat_pick")
+                cat_rows = []
+                for cat in (kpi_pick or _kcat_opts):
+                    sub = trades[_cats == cat] if not trades.empty else trades
+                    if sub.empty:
+                        continue
+                    s_sum = monthly_summary(sub, capital)
+                    ck = kpis(s_sum, sub)
+                    cys = yearly_summary(s_sum, basis)
+                    c_avg_y = pd.to_numeric(cys["Yearly ROI"], errors="coerce").mean() if not cys.empty else None
+                    c_avg_y = None if c_avg_y is None or pd.isna(c_avg_y) else float(c_avg_y)
+                    c_cagrs = []
+                    if not s_sum.empty:
+                        for _, grp in s_sum.groupby(period_label(s_sum["month"], basis), sort=False):
+                            c = cagr_from_monthly(grp["Monthly ROI"])
+                            if c is not None:
+                                c_cagrs.append(c)
+                    c_avg_yc = sum(c_cagrs) / len(c_cagrs) if c_cagrs else None
+                    cat_rows.append({
+                        "Category": cat,
+                        "Net profit": inr(ck["net_profit"], prefix="₹"),
+                        "Avg monthly ROI": f"{pct(ck['avg_roi'])}%" if ck["avg_roi"] is not None else "—",
+                        "CAGR": f"{pct(ck['cagr'])}%" if ck.get("cagr") is not None else "—",
+                        "Avg yearly ROI": f"{pct(c_avg_y)}%" if c_avg_y is not None else "—",
+                        "Avg yearly CAGR": f"{pct(c_avg_yc)}%" if c_avg_yc is not None else "—",
+                        "Win rate": f"{pct(ck['win_rate'], 1)}%" if ck["win_rate"] is not None else "—",
+                        "Best month": f"{ck['best_month'][0]} ({inr(ck['best_month'][1], prefix='₹')})",
+                        "Worst month": f"{ck['worst_month'][0]} ({inr(ck['worst_month'][1], prefix='₹')})",
+                    })
+                if cat_rows:
+                    plain_table(pd.DataFrame(cat_rows), key="tbl_kpis_by_category", full_height=True)
+                    st.caption("Each row uses only that category's trades (Investment Book sales included under "
+                               "their stock's category); ROI figures divide by the same monthly capital as the "
+                               "overall KPIs. Standalone charge entries are excluded.")
+                else:
+                    st.info("No settled trades to break down in the selected year(s).")
 
 
 with monthly_tab:

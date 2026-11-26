@@ -457,26 +457,22 @@ def test_profit_method_setting_flows_to_dashboard():
                         ignore_index=True)
     store.save_frame("owner", "portfolio", entries)
 
-    # default is LIFO: the dashboard's profit booked uses the Jan-25 lot's cost
+    # default is LIFO: the sale books into the Delivery pivot against the Jan-25 lot (profit 5,000)
     at = app("screens/reports.py")
     assert not at.exception, [e.value for e in at.exception]
-    body_frames = [f.value for f in at.get("dataframe")]
-    def find_cost(frames, label):
-        for fr in frames:
-            if label in fr.columns:
-                return fr
-        return None
-    per_sale = find_cost(body_frames, "Cost (LIFO)")
-    assert per_sale is not None, "LIFO cost column should be on the dashboard by default"
+    def deliv_profit(at_):
+        f = next(fr for fr in at_.get("dataframe") if "Sum of Profit/Loss (₹)" in fr.value.columns
+                 and not fr.value["Stock"].astype(str).eq("Grand Total").all())
+        return str(f.value.loc[f.value["Stock"] == "TCS", "Sum of Profit/Loss (₹)"].iloc[0])
+    assert "5,000" in deliv_profit(at)
 
-    # switch to FIFO in the Investment Book and the dashboard follows
+    # switch to FIFO in the Investment Book and the dashboard follows (cost 30,000 -> profit 15,000)
     at2 = app("screens/portfolio_input.py")
     by_label(at2.get("radio"), "Profit booking method").set_value("FIFO — earliest buys sold first").run()
     assert not at2.exception, [e.value for e in at2.exception]
     assert (store.load_json("owner", "meta", {}) or {}).get("sale_match_method") == "fifo"
     at3 = app("screens/reports.py")
-    frames3 = [f.value for f in at3.get("dataframe")]
-    assert find_cost(frames3, "Cost (FIFO)") is not None
+    assert "15,000" in deliv_profit(at3)
 
 
 def test_remove_recorded_sale_restores_holdings():
@@ -1207,15 +1203,17 @@ def test_v38_profit_booked_moved_to_delivery_tab():
     at = app("screens/reports.py")
     assert not at.exception, [e.value for e in at.exception]
     body = " ".join(str(m.value) for m in at.markdown) + " ".join(str(h.value) for h in at.subheader)
-    assert "Profit booked on sales (Investment Book)" in body
-    # combined pivot: TCS = 1,000 (trade) + 5,000 (investment sale)
+    assert "Profit booked on sales (Investment Book)" not in body       # section removed
+    # the sale books straight into the Delivery pivot: TCS = 1,000 (trade) + 5,000 (investment sale)
     deliv = next(f for f in at.get("dataframe") if "Sum of Profit/Loss (₹)" in f.value.columns
                  and not f.value["Stock"].astype(str).eq("Grand Total").all())
     assert deliv.value["Stock"].tolist() == ["TCS"]
     assert "6,000" in str(deliv.value["Sum of Profit/Loss (₹)"].iloc[0])
-    # per-sale table present with LIFO cost column
-    assert any("Cost (LIFO)" in f.value.columns for f in at.get("dataframe"))
-    # the Investments tab no longer holds the section, only the pointer caption
-    assert "Profit booked on sales\n" not in "\n".join(str(h.value) for h in at.subheader)
     captions = " ".join(str(c.value) for c in at.caption)
-    assert "now lives under" in captions
+    assert "booked here as Equity Delivery rows" in captions            # booking note shown
+    # the collapsible bottom sections exist with their filters
+    exp_labels = [e.label for e in at.expander]
+    for lbl in ("Profit booked by stock", "Profit booked by year — Equity vs Futures & Options", "KPIs by category"):
+        assert lbl in exp_labels, exp_labels
+    assert any(m.key == "comp_cat_pick" for m in at.multiselect)
+    assert any(m.key == "kpi_cat_pick" for m in at.multiselect)

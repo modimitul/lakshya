@@ -178,6 +178,16 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.9
+- **Investment Book sales now book straight into the Yearly Trading Performance figures**: every
+  recorded sale becomes a settled Equity Delivery row (LIFO/FIFO cost basis per the owner's setting),
+  so it counts in the yearly table, KPIs, monthly figures, trade log, Excel download and the Delivery
+  pivot. The separate "Profit booked on sales (Investment Book)" section (metrics, by-year, per-sale)
+  is gone.
+- The three analysis sections — **Profit booked by stock**, **Profit booked by year — Equity vs
+  Futures & Options**, **KPIs by category** — moved to the **bottom** of the yearly tab as
+  **collapsible** panels: the pivots have per-tab stock/month filters, the other two a Categories filter.
+
 ## What's new in v3.8
 - **Profit booked on sales moved**: the whole section (metrics, by-year table and chart, per-sale table
   and chart) now lives under **Yearly Trading Performance → Profit booked by stock → Delivery**, since
