@@ -178,6 +178,17 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.11
+- Yearly Trading Performance: a **Category** dropdown between Year and Year basis — Equity,
+  Futures & Options, ETF, Debt, Liquid Fund, Mutual Fund — that re-builds the whole tab (yearly
+  table, KPIs, benchmarks, CAGR, breakdown, monthly tab) from that category's trades.
+- The by-year composite covers all six categories (Liquid Fund and Mutual Fund added).
+- Trading Monthly performance: a **Show the monthly trades** toggle under the monthly table lists
+  every settled trade behind the selected months, with a pinned Total.
+- New **Options Greeks** page (Overview section, before Strategy Guide): Delta, Theta, Vega and
+  Gamma each explained in plain words with the seller's playbook — the 0.15–0.30 Delta band, Theta
+  decay timing, IV-Rank selling, gamma risk — plus summary rules and ideal selling conditions.
+
 ## What's new in v3.10
 - Trade log (Yearly Trading Performance): a **Filter by trade type** dropdown (Equity Delivery,
   Equity Intraday, every other type present) next to the stock/month filters.

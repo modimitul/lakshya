@@ -50,15 +50,17 @@ def trade_category(row) -> str:
         return "Debt"
     if t in EQUITY_TRADE_TYPES or t == OTHER_TYPE or not t:
         blob = f"{row.get('sector', '')} {row.get('stock', '')}".upper()
+        if "LIQUID" in blob:
+            return "Liquid Fund"
         if "ETF" in blob or "BEES" in blob:
             return "ETF"
         if "MUTUAL" in blob or " MF" in f" {blob}":
-            return "MF"
+            return "Mutual Fund"
         return "Equity"
     return "Futures & Options"
 
 
-CATEGORY_ORDER = ["Equity", "ETF", "MF", "Debt", "Futures & Options"]
+CATEGORY_ORDER = ["Equity", "Futures & Options", "ETF", "Debt", "Liquid Fund", "Mutual Fund"]
 
 
 def invest_sales_for_owner():
@@ -164,15 +166,27 @@ with trading_tab:
             meta = state.get_meta()
             all_trades = trades
 
-            yf, bf, _ = st.columns([1, 1.4, 1.6])
+            yf, cf, bf = st.columns([1, 1, 1.6])
             basis_label = bf.radio("Year basis", ["Calendar (Jan–Dec)", "Financial (Apr–Mar)"], horizontal=True,
                                    key="year_basis", help="Applies to the Year filter, the yearly table and the benchmark comparison.")
             basis = "financial" if basis_label.startswith("Financial") else "calendar"
+            _catser_all = all_trades.apply(trade_category, axis=1)
+            _cats_present = [c for c in CATEGORY_ORDER if (_catser_all == c).any()]
+            cat_pick_main = cf.selectbox("Category", ["All categories"] + _cats_present, key="main_cat_pick",
+                                         help="Show the yearly table, benchmarks, CAGR and breakdown for one "
+                                              "category only: Equity, Futures & Options, ETF, Debt, Liquid Fund "
+                                              "or Mutual Fund.")
+            if cat_pick_main != "All categories":
+                all_trades = all_trades[(_catser_all == cat_pick_main).values]
+                st.caption(f"Showing **{cat_pick_main}** only — every figure on this tab (and the monthly tab) is "
+                           "built from that category's trades; standalone charge entries are left out while a "
+                           "category is selected.")
             trade_periods = period_label(all_trades["month"], basis)
             periods_available = list(pd.Series(trade_periods.values, index=all_trades["month"].values).dropna()
                                      .groupby(level=0).first().sort_index().unique())
             year_pick = yf.multiselect("Year", periods_available, placeholder="All years",
                                        help="Narrows the KPIs, monthly sections and breakdown. The yearly table always shows every year.")
+            trades = all_trades                      # category filter (above) applies with or without a year pick
             if year_pick:
                 trades = all_trades[trade_periods.isin(year_pick).values]
             summary = monthly_summary(trades, capital)
@@ -444,7 +458,8 @@ with trading_tab:
                         _sub["_deliv_profit"] = _plv.where(_plv.notna(), _gpv)
                     _stock_pivot(_sub, "_deliv_profit", "Sum of Profit/Loss (₹)", "tbl_pivot_delivery")
 
-            with st.expander("Profit booked by year — Equity vs Futures & Options", expanded=False):
+            with st.expander("Profit booked by year — Equity · F&O · ETF · Debt · Liquid Fund · Mutual Fund",
+                             expanded=False):
                 _nc = trades[_cats != "Charges"] if not trades.empty else trades
                 if _nc.empty:
                     st.info("No settled trades in the selected year(s).")
@@ -556,6 +571,30 @@ with monthly_tab:
             monthly_table = monthly_table_frame(msel, mk)
             plain_table(monthly_table, key="tbl_monthly")
             st.caption("Grand Total: capital is the average of the months; profit, brokerage and trades are sums; ROI is the sum of monthly ROI.")
+        if st.toggle("Show the monthly trades", key="tgl_monthly_trades"):
+            mtr = (trades[period_label(trades["month"], basis).isin(m_pick).values] if m_pick else trades).copy()
+            if mtr.empty:
+                st.info("No trades in the selected month(s).")
+            else:
+                mtr["Month"] = mtr["month"].dt.strftime("%b-%y")
+                _mlead = [c for c in ("Month", "stock", "type", "strike", "qty", "buy", "buy_date", "sell",
+                                      "sale_date", "brokerage", "gross_profit", "roi", "source_sheet")
+                          if c in mtr.columns or c == "Month"]
+                mtr = mtr.sort_values(["month", "stock"], ascending=[False, True], na_position="last")
+                mtr = mtr[[c for c in _mlead if c in mtr.columns]].reset_index(drop=True)
+                for _dc in ("buy_date", "sale_date"):
+                    if _dc in mtr.columns:
+                        mtr[_dc] = pd.to_datetime(mtr[_dc], errors="coerce").dt.strftime("%d-%b-%y")
+                _mt = {c: "" for c in mtr.columns}
+                _mt["Month"] = "Total"
+                if "stock" in _mt:
+                    _mt["stock"] = f"{len(mtr):,} rows"
+                for _nc in ("gross_profit", "brokerage"):
+                    if _nc in mtr.columns:
+                        _mt[_nc] = round(float(pd.to_numeric(mtr[_nc], errors="coerce").sum()), 2)
+                plain_table(pd.concat([mtr, pd.DataFrame([_mt])], ignore_index=True), key="tbl_monthly_trades")
+                st.caption("Every settled trade in the selected month(s), newest month first — the rows behind "
+                           "the monthly figures above.")
 
         # --------------------------------------- capital & charges (chart, then tables)
         st.subheader("Capital and charges")

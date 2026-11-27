@@ -1213,7 +1213,9 @@ def test_v38_profit_booked_moved_to_delivery_tab():
     assert "booked here as Equity Delivery rows" in captions            # booking note shown
     # the collapsible bottom sections exist with their filters
     exp_labels = [e.label for e in at.expander]
-    for lbl in ("Profit booked by stock", "Profit booked by year — Equity vs Futures & Options", "KPIs by category"):
+    for lbl in ("Profit booked by stock",
+                "Profit booked by year — Equity · F&O · ETF · Debt · Liquid Fund · Mutual Fund",
+                "KPIs by category"):
         assert lbl in exp_labels, exp_labels
     assert any(m.key == "comp_cat_pick" for m in at.multiselect)
     assert any(m.key == "kpi_cat_pick" for m in at.multiselect)
@@ -1269,3 +1271,45 @@ def test_v310_tradelog_type_filter_and_removal():
     assert any("Investment Book" in str(e.value) for e in at2.error)
     port = store.load_frame("owner", "portfolio")
     assert (port["side"].astype(str).str.lower() == "sell").sum() == 1   # sale untouched
+
+
+def test_v311_category_dropdown_monthly_trades_and_greeks_page():
+    """Yearly tab: Category dropdown filters the figures; monthly tab: Show the monthly trades;
+    nav: Options Greeks page before Strategy Guide."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.parse import trade_from_form
+
+    t1 = trade_from_form(buy_date=dt.date(2026, 1, 5), stock="LTTS", type="Equity Intraday",
+                         qty=10, buy=100.0, sell=120.0, sale_date=dt.date(2026, 1, 5), brokerage=0.0, lot=1)
+    t2 = trade_from_form(sale_date=dt.date(2026, 3, 2), stock="NIFTY", type="Naked Put Sell", strike=22000,
+                         qty=75, sell=100.0, buy=40.0, buy_date=dt.date(2026, 3, 10), brokerage=0.0, lot=1)
+    store.save_frame("owner", "trades", pd.concat([t1.trades, t2.trades], ignore_index=True))
+
+    at = app("screens/reports.py")
+    assert not at.exception, [e.value for e in at.exception]
+    # category dropdown sits on the yearly tab; picking F&O leaves only the NIFTY trade
+    by_label(at.selectbox, "Category").set_value("Futures & Options").run()
+    assert not at.exception, [e.value for e in at.exception]
+    grid = next(e for e in at.get("data_editor") if "Remove" in e.value.columns and "Month" in e.value.columns) \
+        if any(r.key == "radio_tradelog" and r.value == "Show" for r in at.radio) else None
+    k_trades = next(m for m in at.metric if m.label == "Net profit")
+    assert "4,500" in str(k_trades.value)        # (100-40)×75 = 4,500 — only the F&O trade counts
+
+    # monthly tab: Show the monthly trades toggle lists the trades
+    next(t for t in at.toggle if t.key == "tgl_monthly_trades").set_value(True).run()
+    assert not at.exception, [e.value for e in at.exception]
+    # body table and its pinned Total strip render as separate frames
+    assert any("Month" in f.value.columns and "stock" in f.value.columns
+               and "NIFTY" in set(f.value["stock"].astype(str)) for f in at.get("dataframe"))
+    assert any("Month" in f.value.columns and (f.value["Month"].astype(str) == "Total").all()
+               and len(f.value) == 1 for f in at.get("dataframe"))
+
+    # Options Greeks page: content renders
+    at2 = app("screens/greeks.py")
+    assert not at2.exception, [e.value for e in at2.exception]
+    assert any("Options Greeks" in str(t.value) for t in at2.title)
+    body = " ".join(str(m.value) for m in at2.markdown)
+    for word in ("Delta", "Theta", "Vega", "Gamma", "IV Rank", "Ideal conditions"):
+        assert word in body or any(word in str(h.value) for h in at2.header), word

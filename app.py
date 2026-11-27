@@ -154,6 +154,7 @@ with st.sidebar:
 
 home = st.Page("screens/home.py", title="Home", icon=":material/home:", default=True)
 guide = st.Page("screens/strategy_guide.py", title="Strategy Guide", icon=":material/menu_book:")
+greeks = st.Page("screens/greeks.py", title="Options Greeks", icon=":material/functions:")
 trading = st.Page("screens/trading_input.py", title="Trading Book", icon=":material/upload_file:")
 portfolio = st.Page("screens/portfolio_input.py", title="Investment Book", icon=":material/account_balance:")
 benchmarks = st.Page("screens/benchmarks.py", title="Benchmarks", icon=":material/show_chart:")
@@ -163,7 +164,7 @@ users_page = st.Page("screens/users_admin.py", title="User management", icon=":m
 
 # Sections draw a labelled divider in the sidebar: Overview | Books | Reports | Settings.
 st.navigation({
-    "Overview": [home, benchmarks, guide],
+    "Overview": [home, benchmarks, greeks, guide],
     "Books": [trading, portfolio],
     "Reports": [reports],
     "Settings": [stocks_page, users_page],
