@@ -178,6 +178,14 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## What's new in v3.10
+- Trade log (Yearly Trading Performance): a **Filter by trade type** dropdown (Equity Delivery,
+  Equity Intraday, every other type present) next to the stock/month filters.
+- Trade log rows can be **removed**: tick Remove and press *Remove selected* — the trade is deleted
+  from the Trading Book itself, so it disappears from every figure (Yearly and Monthly performance,
+  pivots, downloads). Rows that came from Investment Book sales are protected: remove the sale in
+  Investment Book → Record a sale → Sales recorded instead.
+
 ## What's new in v3.9
 - **Investment Book sales now book straight into the Yearly Trading Performance figures**: every
   recorded sale becomes a settled Equity Delivery row (LIFO/FIFO cost basis per the owner's setting),

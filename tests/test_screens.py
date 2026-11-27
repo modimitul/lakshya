@@ -310,13 +310,13 @@ def test_open_positions_flow_and_dashboard_exclusion():
     assert any(m.label == "Avg yearly ROI" for m in at.metric)
     # the open NIFTY row is nowhere on the dashboard — not even in the trade log tables
     next(r for r in at.radio if r.key == "radio_tradelog").set_value("Show").run()
-    found_log_total = False
     for frame in at.get("dataframe"):
         vals = frame.value.to_numpy().ravel().tolist()
         assert not any("NIFTY" in str(v) for v in vals), "open position leaked into a dashboard table"
-        if "Month" in frame.value.columns and (frame.value["Month"].astype(str) == "Total").any():
-            found_log_total = True
-    assert found_log_total, "trade log should end with a Total row"
+    # the trade log is now an editable grid with a Remove column and a Total line below it
+    log_grid = next(e for e in at.get("data_editor") if "Remove" in e.value.columns and "Month" in e.value.columns)
+    assert not any("NIFTY" in str(v) for v in log_grid.value.to_numpy().ravel().tolist())
+    assert any("Total" in str(m.value) and "row(s)" in str(m.value) for m in at.markdown)
 
 
 def test_strategy_guide_page_renders():
@@ -1217,3 +1217,55 @@ def test_v38_profit_booked_moved_to_delivery_tab():
         assert lbl in exp_labels, exp_labels
     assert any(m.key == "comp_cat_pick" for m in at.multiselect)
     assert any(m.key == "kpi_cat_pick" for m in at.multiselect)
+
+
+def test_v310_tradelog_type_filter_and_removal():
+    """Trade log: filter by trade type; removing a row deletes the trade from the Trading Book,
+    so yearly/monthly figures drop it. Investment Book sale rows are protected."""
+    import datetime as dt
+    import pandas as pd
+    from core import store
+    from core.parse import trade_from_form
+    from core.portfolio import clean_portfolio, sale_from_form
+
+    t1 = trade_from_form(buy_date=dt.date(2026, 1, 5), stock="LTTS", type="Equity Intraday",
+                         qty=10, buy=100.0, sell=120.0, sale_date=dt.date(2026, 1, 5), brokerage=0.0, lot=1)
+    t2 = trade_from_form(buy_date=dt.date(2026, 1, 7), stock="TCS", type="Equity Delivery",
+                         qty=5, buy=3000.0, sell=3200.0, sale_date=dt.date(2026, 2, 10), brokerage=0.0, lot=1)
+    store.save_frame("owner", "trades", pd.concat([t1.trades, t2.trades], ignore_index=True))
+    raw = pd.DataFrame({"MONTH": ["Jul-23"], "SECTORS": ["IT"], "STOCK": ["INFY"], "QTY": [10], "BUY": [1000.0]})
+    sale = sale_from_form(dt.date(2024, 1, 1), "IT", "INFY", 10, 1200.0, 0.0).entries
+    store.save_frame("owner", "portfolio", pd.concat([clean_portfolio(raw).entries, sale], ignore_index=True))
+
+    at = app("screens/reports.py")
+    next(r for r in at.radio if r.key == "radio_tradelog").set_value("Show").run()
+    # type filter narrows to Equity Intraday
+    by_label(at.selectbox, "Filter by trade type").set_value("Equity Intraday").run()
+    grid = next(e for e in at.get("data_editor") if "Remove" in e.value.columns and "Month" in e.value.columns)
+    assert grid.value["stock"].tolist() == ["LTTS"]
+
+    # back to all types: remove the TCS delivery trade
+    by_label(at.selectbox, "Filter by trade type").set_value("All types").run()
+    grid = next(e for e in at.get("data_editor") if "Remove" in e.value.columns and "Month" in e.value.columns)
+    disp = grid.value.reset_index(drop=True)
+    pos = int(disp.index[disp["stock"] == "TCS"][0])
+    at.session_state[grid.key] = {"edited_rows": {str(pos): {"Remove": True}},
+                                  "added_rows": [], "deleted_rows": []}
+    next(b for b in at.button if b.key == "tradelog_remove").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    saved = store.load_frame("owner", "trades")
+    assert "TCS" not in set(saved["stock"])                     # gone from the book
+    assert "LTTS" in set(saved["stock"])
+
+    # the Investment Book sale row is protected: ticking it shows an error, sale stays
+    at2 = app("screens/reports.py")
+    next(r for r in at2.radio if r.key == "radio_tradelog").set_value("Show").run()
+    grid2 = next(e for e in at2.get("data_editor") if "Remove" in e.value.columns and "Month" in e.value.columns)
+    disp2 = grid2.value.reset_index(drop=True)
+    pos2 = int(disp2.index[disp2["stock"] == "INFY"][0])
+    at2.session_state[grid2.key] = {"edited_rows": {str(pos2): {"Remove": True}},
+                                    "added_rows": [], "deleted_rows": []}
+    next(b for b in at2.button if b.key == "tradelog_remove").click().run()
+    assert any("Investment Book" in str(e.value) for e in at2.error)
+    port = store.load_frame("owner", "portfolio")
+    assert (port["side"].astype(str).str.lower() == "sell").sum() == 1   # sale untouched

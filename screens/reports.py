@@ -22,6 +22,8 @@ st.caption(f"Portfolio owner: **{owner}**")
 GREEN, RED, BLUE = "#2E7D32", "#C62828", "#1F4E79"
 MARGIN = dict(t=50, b=20, l=10, r=10)
 
+for _msg in st.session_state.pop("reports_flash", []):
+    st.success(_msg)
 trading_tab, monthly_tab, invest_tab = st.tabs(
     ["Yearly Trading Performance", "Trading Monthly performance", "Investments"])
 _monthly_ready = False
@@ -121,6 +123,8 @@ with trading_tab:
             "gross_profit": _profit,
             "pl": _profit,
             "entry_kind": "trade",
+            "source_sheet": "Investment Book",
+            "_store_idx": -1,
         })
     else:
         _synth = pd.DataFrame()
@@ -133,6 +137,7 @@ with trading_tab:
         _open_mask = open_positions_mask(_real)
         n_open = int(_open_mask.sum())
         _real = _real[~_open_mask].copy()
+        _real["_store_idx"] = _real.index          # position in the stored trades frame, for removal
     else:
         _real = pd.DataFrame()
     trades = pd.concat([f for f in (_real, _synth) if not f.empty], ignore_index=True) if (not _real.empty or not _synth.empty) else _real
@@ -314,24 +319,60 @@ with trading_tab:
 
             if st.radio("Trade log", ["Hide", "Show"], horizontal=True, key="radio_tradelog") == "Show":
                 log = stock_month_filter(trades.copy(), key="rep_tradelog_filter")
+                _tf1, _ = st.columns([1.2, 2.8])
+                _type_opts = (sorted(log["type"].map(canonical).dropna().astype(str).replace("", pd.NA).dropna().unique())
+                              if "type" in log.columns else [])
+                type_pick = _tf1.selectbox("Filter by trade type", ["All types"] + list(_type_opts),
+                                           key="rep_tradelog_type",
+                                           help="E.g. Equity Delivery or Equity Intraday.")
+                if type_pick != "All types" and "type" in log.columns:
+                    log = log[log["type"].map(canonical) == type_pick]
                 log["Month"] = log["month"].dt.strftime("%b-%y")
                 lead = [c for c in ("Month", "stock", "type", "strike", "qty", "buy", "buy_date", "sell",
                                     "sale_date", "brokerage", "margin", "lot", "gross_profit", "roi",
                                     "entry_kind", "source_sheet") if c in log.columns or c == "Month"]
-                log = log[[c for c in lead if c in log.columns]]
-                for dcol in ("buy_date", "sale_date"):
-                    if dcol in log.columns:
-                        log[dcol] = pd.to_datetime(log[dcol], errors="coerce").dt.strftime("%d-%b-%y")
+                keep = [c for c in lead if c in log.columns]
                 if "stock" in log.columns:
                     log = log.sort_values(["stock", "Month"], na_position="last")
-                total = {c: "" for c in log.columns}
-                total["Month"] = "Total"
-                if "stock" in total:
-                    total["stock"] = f"{len(log):,} rows"
-                for num_col in ("gross_profit", "brokerage"):
-                    if num_col in log.columns:
-                        total[num_col] = round(float(pd.to_numeric(log[num_col], errors="coerce").sum()), 2)
-                plain_table(pd.concat([log, pd.DataFrame([total])], ignore_index=True), key="tbl_tradelog")
+                _store_pos = log["_store_idx"].tolist() if "_store_idx" in log.columns else [-1] * len(log)
+                disp = log[keep].reset_index(drop=True)
+                for dcol in ("buy_date", "sale_date"):
+                    if dcol in disp.columns:
+                        disp[dcol] = pd.to_datetime(disp[dcol], errors="coerce").dt.strftime("%d-%b-%y")
+                disp.insert(0, "Remove", False)
+                log_edited = st.data_editor(
+                    disp, hide_index=True, width="stretch",
+                    height=min(len(disp) + 1, 20) * 35 + 3,
+                    disabled=[c for c in disp.columns if c != "Remove"],
+                    key=f"tradelog_grid_{len(disp)}_{hash(tuple(_store_pos)) & 0xffff}",
+                    column_config={"Remove": st.column_config.CheckboxColumn(
+                        "Remove", help="Tick and press 'Remove selected' — the trade is deleted from the "
+                                       "Trading Book, so it leaves every figure here (yearly, monthly, pivots).")},
+                )
+                _gp_sum = float(pd.to_numeric(disp.get("gross_profit"), errors="coerce").fillna(0).sum())
+                _bk_sum = float(pd.to_numeric(disp.get("brokerage"), errors="coerce").fillna(0).sum())
+                st.markdown(f"**Total** — {len(disp):,} row(s) · Gross profit {inr(_gp_sum, prefix='₹')} · "
+                            f"Brokerage {inr(_bk_sum, prefix='₹')}")
+                if st.button("Remove selected", key="tradelog_remove"):
+                    _rm = log_edited["Remove"].fillna(False).astype(bool).to_numpy()
+                    if not _rm.any():
+                        st.info("Tick **Remove** on at least one row first.")
+                    else:
+                        _picked = [_store_pos[i] for i in range(len(_store_pos)) if _rm[i]]
+                        _synth_picked = [i for i in _picked if i == -1]
+                        _real_picked = [i for i in _picked if i != -1]
+                        if _synth_picked:
+                            st.error(f"{len(_synth_picked)} ticked row(s) are Investment Book sales — remove the "
+                                     "sale itself in **Investment Book → Record a sale → Sales recorded** and it "
+                                     "leaves this dashboard too.")
+                        if _real_picked:
+                            _stored = state.get_frame("trades")
+                            _remaining = _stored.drop(index=_real_picked).reset_index(drop=True)
+                            state.put_frame("trades", _remaining if not _remaining.empty else None)
+                            st.session_state["reports_flash"] = [
+                                f"Removed {len(_real_picked)} trade(s) from the Trading Book — they are out of "
+                                "every figure here (Yearly and Monthly performance, pivots, downloads)."]
+                            st.rerun()
             if excluded is not None and not excluded.empty:
                 if st.toggle(f"Show the {len(excluded)} rows excluded from monthly totals", key="tgl_excluded"):
                     exc = excluded.copy()
@@ -351,7 +392,8 @@ with trading_tab:
                 sheets["Vs benchmarks CAGR"] = cagr_table(full_summary, bench_monthly, basis, picked or series_options)
             for dim in dimensions:
                 sheets[f"By {dim.title()}"] = breakdown(trades, dim)
-            sheets["Trades"] = trades.assign(Month=trades["month"].dt.strftime("%b-%y"))
+            sheets["Trades"] = (trades.drop(columns=["_store_idx"], errors="ignore")
+                                .assign(Month=trades["month"].dt.strftime("%b-%y")))
             if excluded is not None and not excluded.empty:
                 sheets["Excluded"] = excluded
             d1, d2 = st.columns(2)
